@@ -1,0 +1,22 @@
+# data & checkpoints — too large for git
+data/
+checkpoints/
+
+# Python
+__pycache__/
+*.py[cod]
+*.egg-info/
+*.egg
+dist/
+build/
+.eggs/
+
+# MuJoCo
+MUJOCO_LOG.TXT
+*.xml.bak
+
+# Jupyter
+.ipynb_checkpoints/
+
+# OS
+.DS_Store
