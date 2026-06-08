@@ -1,0 +1,82 @@
+sim:
+  room_size: 6.0          # meters, square room
+  camera_height: 1.6      # meters
+  camera_fov: 90          # degrees
+  fps: 30
+  difficulty: "static"    # static | moving | debris
+
+depth:
+  model: "depth-anything-v2-small"
+  output_h: 128
+  output_w: 128
+
+shadow:
+  num_rays: 512
+  march_steps: 64
+  march_step_size: 0.05   # meters per step
+  grid_cells: 9           # 3x3 spatial zone grid
+  density_threshold: 0.5  # ray termination threshold
+  target_hz: 15
+
+world_model:
+  architecture: "unet"    # unet | convlstm
+  base_channels: 64
+  depth_multiplier: 4
+  prediction_horizons: [1, 3, 5, 10]  # seconds
+  batch_size: 32
+  lr: 1.0e-4
+  epochs: 100
+  bce_weight: 1.0
+  physics_reg_weight: 0.1
+  checkpoint_dir: "checkpoints/world_model"
+
+agents:
+  local:
+    hidden_dim: 256
+    num_layers: 3
+    control_hz: 20
+    ppo_lr: 3.0e-4
+    ppo_gamma: 0.99
+    ppo_clip: 0.2
+    reward_collision_weight: -10.0
+    reward_efficiency_weight: 1.0
+    reward_audio_clarity_weight: -2.0
+    max_simultaneous_cues: 3
+
+  global:
+    planning_hz: 2
+    astar_heuristic_weight: 1.2
+
+  orchestrator:
+    uncertainty_stop_threshold: 0.85
+
+audio:
+  sample_rate: 44100
+  buffer_size: 1024
+  hrtf_dataset: "mit_kemar"
+  zones:  # azimuth angles for 9 zones (degrees, 0=front, +ve=right)
+    left_far:    -135
+    left:        -90
+    left_near:   -45
+    front_left:  -22
+    front:       0
+    front_right: 22
+    right_near:  45
+    right:       90
+    right_far:   135
+  base_frequency: 200.0   # Hz, low ambient hum for shadow zones
+  doppler_sweep_duration: 3.0  # seconds, falling-object cue
+  min_intensity: 0.0
+  max_intensity: 1.0
+
+optical_flow:
+  model: "raft_small"
+
+eval:
+  num_episodes: 100
+  difficulty_tiers: ["static", "moving", "debris"]
+  iou_horizon: 5          # seconds
+
+wandb:
+  project: "shadowweave"
+  entity: null            # set to your wandb username
