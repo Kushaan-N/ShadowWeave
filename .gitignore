@@ -11,6 +11,9 @@ dist/
 build/
 .eggs/
 
+# Claude
+CLAUDE.md
+
 # MuJoCo
 MUJOCO_LOG.TXT
 *.xml.bak
