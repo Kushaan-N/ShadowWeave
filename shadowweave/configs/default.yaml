@@ -1,12 +1,20 @@
+seed: 0
+deterministic: false
+
 sim:
   room_size: 6.0          # meters, square room
   camera_height: 1.6      # meters
   camera_fov: 90          # degrees
   fps: 30
   difficulty: "static"    # static | moving | debris
+  agent_max_speed: 0.1    # metres per physics step
+  agent_max_turn_rate: 0.15  # radians per physics step
+  max_episode_steps: 500
+  agent_radius: 0.25      # metres — used for real geometric collision detection
+  substeps: 3             # physics steps per env.step
 
 depth:
-  model: "depth-anything-v2-small"
+  model: "depth-anything/Depth-Anything-V2-Small-hf"
   output_h: 128
   output_w: 128
 
@@ -14,9 +22,23 @@ shadow:
   num_rays: 512
   march_steps: 64
   march_step_size: 0.05   # meters per step
-  grid_cells: 9           # 3x3 spatial zone grid
+  grid_cells: 9           # 9 azimuth zones, 1-to-1 with the 9 audio directions
   density_threshold: 0.5  # ray termination threshold
   target_hz: 15
+  max_range_m: 8.0        # depth 1.0 == this distance; FIXED so frames are comparable
+  elevation_samples: 9    # rows of the depth map sampled per ray
+  elevation_extent: 0.35  # +/- normalised image y covered by the elevation band
+  zone_temperature: 0.5   # softmax temperature over zones; lower = sharper zones
+  zone_init_sharpness: 6.0  # initial ray->zone logit scale
+
+bev:
+  size: 96                # S x S egocentric grid
+  range_m: 5.0            # forward extent in metres; 8.0 in a 6m room put ~90% of
+                          # the grid outside the walls and left it 91% shadow
+  surface_thickness_m: 0.25   # width of the occupancy bump at the hit surface
+  visibility_softness_m: 0.15 # sigmoid width of the free/shadow boundary
+  depth_softmin_beta: 12.0    # sharpness of the soft-min over the elevation band
+  input_channels: ["occupancy", "visibility", "flow"]  # world model input stack
 
 world_model:
   architecture: "unet"    # unet | convlstm
@@ -25,10 +47,19 @@ world_model:
   prediction_horizons: [1, 3, 5, 10]  # seconds
   batch_size: 32
   lr: 1.0e-4
+  weight_decay: 0.01
+  warmup_steps: 500
   epochs: 100
   bce_weight: 1.0
   physics_reg_weight: 0.1
+  pos_weight: 6.0         # BCE positive-class weight; BEV targets are ~7% positive
   checkpoint_dir: "checkpoints/world_model"
+  num_workers: 8
+  amp: true               # mixed precision (CUDA only)
+  compile: false          # torch.compile the model
+  grad_clip: 1.0
+  early_stop_patience: 15
+  log_interval: 20
 
 agents:
   local:
@@ -38,14 +69,22 @@ agents:
     ppo_lr: 3.0e-4
     ppo_gamma: 0.99
     ppo_clip: 0.2
+    ppo_n_envs: 8
+    ppo_n_steps: 512
     reward_collision_weight: -10.0
     reward_efficiency_weight: 1.0
+    reward_progress_weight: 5.0
+    reward_shadow_weight: -0.5
     reward_audio_clarity_weight: -2.0
     max_simultaneous_cues: 3
+    checkpoint_dir: "checkpoints/local_agent"
 
   global:
     planning_hz: 2
     astar_heuristic_weight: 1.2
+    astar_obstacle_cost: 10.0   # multiplier on occupancy when scoring a cell
+    astar_shadow_cost: 2.0      # extra cost for routing through unobserved space
+    astar_allow_diagonal: true
 
   orchestrator:
     uncertainty_stop_threshold: 0.85
@@ -54,6 +93,7 @@ audio:
   sample_rate: 44100
   buffer_size: 1024
   hrtf_dataset: "mit_kemar"
+  hrtf_dir: "data/kemar"
   zones:  # azimuth angles for 9 zones (degrees, 0=front, +ve=right)
     left_far:    -135
     left:        -90
@@ -68,15 +108,28 @@ audio:
   doppler_sweep_duration: 3.0  # seconds, falling-object cue
   min_intensity: 0.0
   max_intensity: 1.0
+  cue_threshold: 0.1      # below this a zone stays silent (absence of cue = safe)
+  master_gain: 0.5
 
 optical_flow:
   model: "raft_small"
+
+data:
+  root: "data/rollouts"
+  steps_per_episode: 300
+  train_episodes: 400
+  val_episodes: 80
+  compress: false         # uncompressed .npz so the loader can memory-map it
+  policy: "explore"       # explore | random | straight — drives the camera during rollouts
 
 eval:
   num_episodes: 100
   difficulty_tiers: ["static", "moving", "debris"]
   iou_horizon: 5          # seconds
+  steps_per_episode: 200
+  results_dir: "results"
 
 wandb:
   project: "shadowweave"
   entity: null            # set to your wandb username
+  mode: "online"          # online | offline | disabled
