@@ -1,0 +1,48 @@
+# Conda environment for ShadowWeave on a CUDA GPU cluster.
+#
+#   conda env create -f environment.yml
+#   conda activate shadowweave
+#   pip install -e .
+#
+# The SLURM scripts activate ${SW_ENV:-shadowweave}, so keeping this name means
+# they work unchanged. For a CPU-only or macOS machine, drop the pytorch-cuda line
+# and conda will resolve the CPU/MPS build instead.
+name: shadowweave
+channels:
+  - pytorch
+  - nvidia
+  - conda-forge
+dependencies:
+  - python=3.11
+  - pip
+
+  # Deep learning — pytorch-cuda must match the cluster driver; 12.4 is a safe
+  # default for driver >= 550. Check with `nvidia-smi` and adjust if needed.
+  - pytorch>=2.2
+  - torchvision
+  - pytorch-cuda=12.4
+
+  - numpy>=1.24
+  - scipy>=1.10
+  - matplotlib>=3.7
+
+  # EGL headless rendering for MuJoCo on compute nodes
+  - libglvnd-devel-cos7-x86_64
+  - mesalib
+
+  - pip:
+      - mujoco>=3.0.0
+      - gymnasium>=0.29.0
+      - stable-baselines3>=2.2.0
+      - transformers>=4.40.0
+      - Pillow>=10.0.0
+      - networkx>=3.0
+      - sounddevice>=0.4.6
+      - plotly>=5.18.0
+      - gradio>=4.0.0
+      - omegaconf>=2.3.0
+      - hydra-core>=1.3.0
+      - wandb>=0.16.0
+      - tensorboard>=2.15.0
+      - tqdm>=4.66.0
+      - pytest>=7.4.0
