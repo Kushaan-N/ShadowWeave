@@ -1,110 +1,281 @@
-"""Training loop for the ShadowWeave world model."""
+"""Training loop for the ShadowWeave world model.
+
+Built for a SLURM GPU node: AMP, multi-worker loading, optional DDP across the GPUs
+in an allocation, resume-from-checkpoint so a job can survive a time limit, and IOU
+(the metric the project is actually judged on) tracked per horizon every epoch.
+
+Launch:
+    python -m shadowweave.world_model.train                       # single GPU
+    torchrun --nproc_per_node=4 -m shadowweave.world_model.train  # DDP
+"""
 
 from __future__ import annotations
 
+import argparse
+import contextlib
+import math
+import os
 import pathlib
 import time
+from typing import Any, Optional
 
 import torch
+import torch.distributed as dist
 import torch.nn.functional as F
 from omegaconf import DictConfig, OmegaConf
+from torch.nn.parallel import DistributedDataParallel
 from torch.utils.data import DataLoader
+from torch.utils.data.distributed import DistributedSampler
 
+from ..eval.metrics import iou
+from ..utils import (
+    count_parameters,
+    get_device,
+    load_checkpoint,
+    load_config,
+    save_checkpoint,
+    seed_everything,
+)
 from .dataset import RolloutDataset
-from .diffusion import WorldModel
+from .diffusion import build_world_model
 
 
-def train(cfg: DictConfig, data_dir: str) -> None:
-    import torch
-    device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
-    print(f"Training WorldModel on {device}")
+def _dist_info() -> tuple[int, int, int]:
+    """(rank, world_size, local_rank) from torchrun / SLURM env vars."""
+    if dist.is_available() and dist.is_initialized():
+        return dist.get_rank(), dist.get_world_size(), int(os.environ.get("LOCAL_RANK", 0))
+    if "RANK" in os.environ and "WORLD_SIZE" in os.environ:
+        return int(os.environ["RANK"]), int(os.environ["WORLD_SIZE"]), int(os.environ.get("LOCAL_RANK", 0))
+    return 0, 1, 0
+
+
+def _maybe_init_distributed() -> tuple[int, int, int]:
+    if "WORLD_SIZE" in os.environ and int(os.environ["WORLD_SIZE"]) > 1:
+        if not dist.is_initialized():
+            backend = "nccl" if torch.cuda.is_available() else "gloo"
+            dist.init_process_group(backend=backend)
+        rank, world, local = _dist_info()
+        if torch.cuda.is_available():
+            torch.cuda.set_device(local)
+        return rank, world, local
+    return 0, 1, 0
+
+
+def _lr_at(step: int, cfg: DictConfig, total_steps: int) -> float:
+    """Linear warmup then cosine decay. Warmup matters here because pos_weight makes
+    the first few batches produce very large gradients."""
+    warm = cfg.world_model.warmup_steps
+    base = cfg.world_model.lr
+    if step < warm:
+        return base * (step + 1) / max(warm, 1)
+    progress = (step - warm) / max(total_steps - warm, 1)
+    return base * 0.5 * (1 + math.cos(math.pi * min(progress, 1.0)))
+
+
+def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[str, float]:
+    rank, world_size, local_rank = _maybe_init_distributed()
+    is_main = rank == 0
+
+    seed_everything(cfg.seed + rank, deterministic=cfg.deterministic)
+    device = get_device() if world_size == 1 else torch.device(f"cuda:{local_rank}")
+    use_amp = bool(cfg.world_model.amp) and device.type == "cuda"
+
+    if is_main:
+        print(f"Training WorldModel on {device} (world_size={world_size}, amp={use_amp})")
 
     wandb = None
-    try:
-        import wandb as _wandb
-        _wandb.init(
-            project=cfg.wandb.project,
-            entity=cfg.wandb.entity,
-            config=OmegaConf.to_container(cfg, resolve=True),
-        )
-        wandb = _wandb
-    except Exception:
-        print("wandb unavailable — logging to stdout only")
+    if is_main and cfg.wandb.mode != "disabled":
+        try:
+            import wandb as _wandb
+            _wandb.init(
+                project=cfg.wandb.project,
+                entity=cfg.wandb.entity,
+                mode=cfg.wandb.mode,
+                config=OmegaConf.to_container(cfg, resolve=True),
+            )
+            wandb = _wandb
+        except Exception as e:
+            print(f"wandb unavailable ({e.__class__.__name__}) — logging to stdout only")
 
-    train_ds = RolloutDataset(cfg, data_dir, split="train")
-    val_ds   = RolloutDataset(cfg, data_dir, split="val")
-    # pin_memory not supported on MPS
-    pin = device == "cuda"
-    train_dl = DataLoader(train_ds, batch_size=cfg.world_model.batch_size, shuffle=True,  num_workers=0, pin_memory=pin)
-    val_dl   = DataLoader(val_ds,   batch_size=cfg.world_model.batch_size, shuffle=False, num_workers=0, pin_memory=pin)
+    train_ds = RolloutDataset(cfg, data_dir, split="train", augment=True)
+    val_ds = RolloutDataset(cfg, data_dir, split="val")
+    if is_main:
+        print(f"  train={len(train_ds)} samples, val={len(val_ds)} samples")
 
-    model = WorldModel(cfg).to(device)
-    opt = torch.optim.AdamW(model.parameters(), lr=cfg.world_model.lr)
-    scheduler = torch.optim.lr_scheduler.CosineAnnealingLR(opt, T_max=cfg.world_model.epochs)
+    train_sampler = DistributedSampler(train_ds) if world_size > 1 else None
+    pin = device.type == "cuda"
+    nw = cfg.world_model.num_workers
+    train_dl = DataLoader(
+        train_ds, batch_size=cfg.world_model.batch_size, shuffle=train_sampler is None,
+        sampler=train_sampler, num_workers=nw, pin_memory=pin, drop_last=True,
+        persistent_workers=nw > 0, prefetch_factor=4 if nw > 0 else None,
+    )
+    val_dl = DataLoader(
+        val_ds, batch_size=cfg.world_model.batch_size, shuffle=False,
+        num_workers=nw, pin_memory=pin, persistent_workers=nw > 0,
+    )
+
+    model = build_world_model(cfg).to(device)
+    if is_main:
+        print(f"  Parameters: {count_parameters(model)/1e6:.1f}M")
+    if cfg.world_model.compile and hasattr(torch, "compile"):
+        model = torch.compile(model)
+    if world_size > 1:
+        model = DistributedDataParallel(model, device_ids=[local_rank] if device.type == "cuda" else None)
+
+    opt = torch.optim.AdamW(
+        model.parameters(), lr=cfg.world_model.lr, weight_decay=cfg.world_model.weight_decay
+    )
+    scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
+    pos_weight = torch.tensor(cfg.world_model.pos_weight, device=device)
 
     ckpt_dir = pathlib.Path(cfg.world_model.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
 
-    best_val_loss = float("inf")
+    start_epoch, best_val, best_iou, bad_epochs, global_step = 0, float("inf"), 0.0, 0, 0
+    if resume and pathlib.Path(resume).exists():
+        state = load_checkpoint(resume, map_location=device)
+        (model.module if world_size > 1 else model).load_state_dict(state["model"])
+        if "optimizer" in state:
+            opt.load_state_dict(state["optimizer"])
+        if "scaler" in state and use_amp:
+            scaler.load_state_dict(state["scaler"])
+        start_epoch = state.get("epoch", 0) + 1
+        best_val = state.get("metrics", {}).get("val_loss", float("inf"))
+        if is_main:
+            print(f"  Resumed from {resume} at epoch {start_epoch}")
 
-    for epoch in range(cfg.world_model.epochs):
+    total_steps = max(cfg.world_model.epochs * len(train_dl), 1)
+    summary: dict[str, float] = {}
+
+    for epoch in range(start_epoch, cfg.world_model.epochs):
+        if train_sampler is not None:
+            train_sampler.set_epoch(epoch)
+
         model.train()
         train_loss = 0.0
         t0 = time.time()
 
-        for batch in train_dl:
-            shadow = batch["shadow_map"].to(device)
-            vel    = batch["velocity"].to(device)
-            target = batch["future_occupancy"].to(device)
+        for i, batch in enumerate(train_dl):
+            x = batch["input"].to(device, non_blocking=True)
+            y = batch["target"].to(device, non_blocking=True)
 
-            pred = model(shadow, vel)
-            bce  = F.binary_cross_entropy(pred, target)
+            lr = _lr_at(global_step, cfg, total_steps)
+            for g in opt.param_groups:
+                g["lr"] = lr
 
-            # physics consistency: penalise sudden large displacements in predicted occupancy
-            physics_reg = (pred[:, 1:] - pred[:, :-1]).abs().mean()
-            loss = cfg.world_model.bce_weight * bce + cfg.world_model.physics_reg_weight * physics_reg
+            with torch.autocast("cuda", enabled=use_amp):
+                logits = model(x)
+                bce = F.binary_cross_entropy_with_logits(logits, y, pos_weight=pos_weight)
+                # Physics consistency: occupancy should evolve smoothly between
+                # consecutive horizons, so penalise abrupt jumps along the T axis.
+                probs = torch.sigmoid(logits)
+                physics_reg = (probs[:, 1:] - probs[:, :-1]).abs().mean()
+                loss = cfg.world_model.bce_weight * bce + cfg.world_model.physics_reg_weight * physics_reg
 
-            opt.zero_grad()
-            loss.backward()
-            torch.nn.utils.clip_grad_norm_(model.parameters(), 1.0)
-            opt.step()
+            opt.zero_grad(set_to_none=True)
+            scaler.scale(loss).backward()
+            scaler.unscale_(opt)
+            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.world_model.grad_clip)
+            scaler.step(opt)
+            scaler.update()
+
             train_loss += loss.item()
+            global_step += 1
 
-        train_loss /= len(train_dl)
-        scheduler.step()
+            if is_main and i % cfg.world_model.log_interval == 0:
+                print(f"    epoch {epoch+1} step {i}/{len(train_dl)} loss={loss.item():.4f} lr={lr:.2e}",
+                      flush=True)
 
-        # validation
+        train_loss /= max(len(train_dl), 1)
+
+        # ── validation ────────────────────────────────────────────────
         model.eval()
         val_loss = 0.0
+        n_h = len(cfg.world_model.prediction_horizons)
+        iou_sum = torch.zeros(n_h, device=device)
+        n_val = 0
         with torch.no_grad():
             for batch in val_dl:
-                shadow = batch["shadow_map"].to(device)
-                vel    = batch["velocity"].to(device)
-                target = batch["future_occupancy"].to(device)
-                pred   = model(shadow, vel)
-                val_loss += F.binary_cross_entropy(pred, target).item()
-        val_loss /= len(val_dl)
+                x = batch["input"].to(device, non_blocking=True)
+                y = batch["target"].to(device, non_blocking=True)
+                with torch.autocast("cuda", enabled=use_amp):
+                    logits = model(x)
+                    val_loss += F.binary_cross_entropy_with_logits(
+                        logits, y, pos_weight=pos_weight
+                    ).item()
+                iou_sum += iou(torch.sigmoid(logits.float()), y).sum(dim=0)
+                n_val += x.shape[0]
+        val_loss /= max(len(val_dl), 1)
+        ious = (iou_sum / max(n_val, 1)).cpu()
 
-        elapsed = time.time() - t0
-        print(f"Epoch {epoch+1:03d}/{cfg.world_model.epochs}  train={train_loss:.4f}  val={val_loss:.4f}  ({elapsed:.1f}s)")
+        if world_size > 1:
+            t = torch.tensor([val_loss], device=device)
+            dist.all_reduce(t, op=dist.ReduceOp.AVG)
+            val_loss = float(t.item())
+            iou_t = ious.to(device)
+            dist.all_reduce(iou_t, op=dist.ReduceOp.AVG)
+            ious = iou_t.cpu()
 
+        horizons = list(cfg.world_model.prediction_horizons)
+        iou_log = {f"iou_{h:g}s": float(ious[k]) for k, h in enumerate(horizons)}
+        target_iou = iou_log.get(f"iou_{cfg.eval.iou_horizon:g}s", float(ious.mean()))
+
+        if is_main:
+            elapsed = time.time() - t0
+            iou_str = "  ".join(f"{k}={v:.3f}" for k, v in iou_log.items())
+            print(f"Epoch {epoch+1:03d}/{cfg.world_model.epochs}  train={train_loss:.4f}  "
+                  f"val={val_loss:.4f}  {iou_str}  ({elapsed:.1f}s)", flush=True)
+
+            if wandb is not None:
+                wandb.log({"train_loss": train_loss, "val_loss": val_loss,
+                           "epoch": epoch, "lr": _lr_at(global_step, cfg, total_steps), **iou_log})
+
+            raw_model = model.module if world_size > 1 else model
+            metrics = {"val_loss": val_loss, "train_loss": train_loss, **iou_log}
+            save_checkpoint(ckpt_dir / "last.pt", raw_model, cfg, epoch=epoch,
+                            optimizer=opt, scaler=scaler if use_amp else None, metrics=metrics)
+            if val_loss < best_val:
+                best_val, best_iou, bad_epochs = val_loss, target_iou, 0
+                save_checkpoint(ckpt_dir / "best.pt", raw_model, cfg, epoch=epoch,
+                                optimizer=opt, scaler=scaler if use_amp else None, metrics=metrics)
+            else:
+                bad_epochs += 1
+            summary = metrics
+
+        # Every rank must agree on stopping or the collective ops deadlock.
+        stop = torch.tensor([1 if bad_epochs >= cfg.world_model.early_stop_patience else 0],
+                            device=device)
+        if world_size > 1:
+            dist.broadcast(stop, src=0)
+        if bool(stop.item()):
+            if is_main:
+                print(f"Early stopping at epoch {epoch+1} ({bad_epochs} epochs without improvement)")
+            break
+
+    if is_main:
+        raw_model = model.module if world_size > 1 else model
+        save_checkpoint(ckpt_dir / "final.pt", raw_model, cfg, epoch=cfg.world_model.epochs - 1,
+                        metrics=summary)
+        print(f"Training done. Best val loss: {best_val:.4f}  IOU@{cfg.eval.iou_horizon}s: {best_iou:.3f}")
         if wandb is not None:
-            wandb.log({"train_loss": train_loss, "val_loss": val_loss, "epoch": epoch})
+            wandb.finish()
 
-        if val_loss < best_val_loss:
-            best_val_loss = val_loss
-            torch.save(model.state_dict(), ckpt_dir / "best.pt")
+    if world_size > 1 and dist.is_initialized():
+        dist.destroy_process_group()
+    return summary
 
-    torch.save(model.state_dict(), ckpt_dir / "final.pt")
-    print(f"Training done. Best val loss: {best_val_loss:.4f}")
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description="Train the ShadowWeave world model")
+    ap.add_argument("--data", type=str, default=None)
+    ap.add_argument("--resume", type=str, default=None)
+    ap.add_argument("--overrides", nargs="*", default=[])
+    args = ap.parse_args()
+
+    cfg = load_config(overrides=args.overrides)
+    train(cfg, args.data or cfg.data.root, resume=args.resume)
 
 
 if __name__ == "__main__":
-    import sys
-    import pathlib
-
-    cfg_path = pathlib.Path(__file__).parents[1] / "configs" / "default.yaml"
-    cfg = OmegaConf.load(cfg_path)
-
-    data_dir = sys.argv[1] if len(sys.argv) > 1 else "./data/rollouts"
-    train(cfg, data_dir)
+    main()
