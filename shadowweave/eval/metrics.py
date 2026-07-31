@@ -1,8 +1,39 @@
-"""Evaluation metrics — collision rate, path efficiency, prediction IOU."""
+"""Evaluation metrics — collision rate, path efficiency, per-horizon IOU, lead time."""
 
 from __future__ import annotations
 
+from collections import defaultdict
+
 import numpy as np
+import torch
+
+
+def iou(pred: torch.Tensor, target: torch.Tensor, threshold: float = 0.5) -> torch.Tensor:
+    """Per-sample IOU over the trailing spatial dims. Returns (B,) or (B, T).
+
+    An empty prediction on an empty target scores 1.0, not 0.0 — "correctly predicted
+    nothing here" is a success, and scoring it as a miss drags the mean down on the
+    many BEV frames that are legitimately almost empty.
+    """
+    p = (pred > threshold)
+    t = (target > threshold)
+    dims = (-2, -1)
+    inter = (p & t).sum(dim=dims).float()
+    union = (p | t).sum(dim=dims).float()
+    return torch.where(union > 0, inter / union.clamp_min(1.0), torch.ones_like(inter))
+
+
+def masked_iou(
+    pred: torch.Tensor, target: torch.Tensor, mask: torch.Tensor, threshold: float = 0.5
+) -> torch.Tensor:
+    """IOU restricted to cells where ``mask`` is true — used to score shadow regions
+    separately from directly observed ones, which is the claim worth measuring."""
+    p = (pred > threshold) & mask
+    t = (target > threshold) & mask
+    dims = (-2, -1)
+    inter = (p & t).sum(dim=dims).float()
+    union = (p | t).sum(dim=dims).float()
+    return torch.where(union > 0, inter / union.clamp_min(1.0), torch.ones_like(inter))
 
 
 class EvalMetrics:
@@ -11,71 +42,111 @@ class EvalMetrics:
     Primary method: ``log_episode(...)`` then ``summary() -> dict``
     """
 
-    def __init__(self) -> None:
-        self._collisions:    list[bool]  = []
-        self._path_lengths:  list[float] = []
+    def __init__(self, horizons: list[float] | None = None) -> None:
+        self.horizons = list(horizons or [])
+        self.reset()
+
+    def reset(self) -> None:
+        self._collisions: list[bool] = []
+        self._collision_steps: list[float] = []
+        self._path_lengths: list[float] = []
         self._optimal_lengths: list[float] = []
-        self._prediction_ious: list[float] = []  # per-timestep IOU at 5s horizon
+        self._ious: dict[int, list[float]] = defaultdict(list)
+        self._shadow_ious: dict[int, list[float]] = defaultdict(list)
+        self._lead_times: list[float] = []
+        self._latencies_ms: list[float] = []
 
     def log_episode(
         self,
         had_collision: bool,
         path_length: float,
         optimal_path_length: float,
+        collision_rate_per_step: float = 0.0,
     ) -> None:
-        self._collisions.append(had_collision)
-        self._path_lengths.append(path_length)
-        self._optimal_lengths.append(optimal_path_length)
+        self._collisions.append(bool(had_collision))
+        self._collision_steps.append(float(collision_rate_per_step))
+        self._path_lengths.append(float(path_length))
+        self._optimal_lengths.append(float(optimal_path_length))
 
-    def log_prediction(self, pred: np.ndarray, target: np.ndarray) -> None:
-        """Log one (H, W) binary prediction vs target, compute IOU."""
-        pred_bin  = (pred > 0.5).astype(bool)
-        target_bin = (target > 0.5).astype(bool)
-        intersection = (pred_bin & target_bin).sum()
-        union = (pred_bin | target_bin).sum()
-        iou = float(intersection) / max(float(union), 1.0)
-        self._prediction_ious.append(iou)
+    def log_prediction(
+        self,
+        pred: torch.Tensor,
+        target: torch.Tensor,
+        shadow_mask: torch.Tensor | None = None,
+    ) -> None:
+        """Log one (T, S, S) prediction against its (T, S, S) target."""
+        if pred.ndim == 2:
+            pred, target = pred[None], target[None]
+        vals = iou(pred, target)
+        for h in range(vals.shape[0]):
+            self._ious[h].append(float(vals[h]))
+        if shadow_mask is not None:
+            m = shadow_mask.expand_as(pred) if shadow_mask.ndim == pred.ndim else shadow_mask
+            svals = masked_iou(pred, target, m.bool())
+            for h in range(svals.shape[0]):
+                self._shadow_ious[h].append(float(svals[h]))
+
+    def log_lead_time(self, seconds: float) -> None:
+        self._lead_times.append(float(seconds))
+
+    def log_latency(self, ms: float) -> None:
+        self._latencies_ms.append(float(ms))
+
+    def _horizon_name(self, h: int) -> str:
+        return f"{self.horizons[h]:g}s" if h < len(self.horizons) else f"h{h}"
 
     def summary(self) -> dict[str, float]:
+        out: dict[str, float] = {}
         n = len(self._collisions)
-        if n == 0:
-            return {}
-        collision_rate = sum(self._collisions) / n
-        efficiency = np.mean([
-            opt / max(actual, 1e-6)
-            for actual, opt in zip(self._path_lengths, self._optimal_lengths)
-        ])
-        mean_iou = float(np.mean(self._prediction_ious)) if self._prediction_ious else float("nan")
-        return {
-            "collision_rate":    collision_rate,
-            "path_efficiency":   float(efficiency),
-            "prediction_iou_5s": mean_iou,
-            "n_episodes":        n,
-        }
+        if n:
+            out["collision_rate"] = sum(self._collisions) / n
+            out["collision_rate_per_step"] = float(np.mean(self._collision_steps))
+            out["path_efficiency"] = float(np.mean([
+                opt / max(actual, 1e-6)
+                for actual, opt in zip(self._path_lengths, self._optimal_lengths)
+            ]))
+            out["n_episodes"] = float(n)
 
-    def reset(self) -> None:
-        self.__init__()
+        for h, vals in sorted(self._ious.items()):
+            out[f"iou_{self._horizon_name(h)}"] = float(np.mean(vals))
+        for h, vals in sorted(self._shadow_ious.items()):
+            out[f"shadow_iou_{self._horizon_name(h)}"] = float(np.mean(vals))
+        if self._ious:
+            out["iou_mean"] = float(np.mean([np.mean(v) for v in self._ious.values()]))
+        if self._lead_times:
+            out["falling_lead_time_s"] = float(np.mean(self._lead_times))
+        if self._latencies_ms:
+            out["latency_p50_ms"] = float(np.percentile(self._latencies_ms, 50))
+            out["latency_p95_ms"] = float(np.percentile(self._latencies_ms, 95))
+        return out
 
 
 if __name__ == "__main__":
-    metrics = EvalMetrics()
+    m = EvalMetrics(horizons=[1, 3, 5, 10])
 
-    # simulate 10 episodes
-    for i in range(10):
-        metrics.log_episode(
-            had_collision=np.random.rand() < 0.15,
-            path_length=np.random.uniform(5, 15),
+    for _ in range(10):
+        m.log_episode(
+            had_collision=bool(np.random.rand() < 0.15),
+            path_length=float(np.random.uniform(5, 15)),
             optimal_path_length=5.0,
+            collision_rate_per_step=float(np.random.rand() * 0.05),
         )
-        # simulate 30 prediction timesteps per episode
         for _ in range(30):
-            metrics.log_prediction(
-                np.random.rand(128, 128),
-                (np.random.rand(128, 128) > 0.8).astype(np.float32),
-            )
+            target = (torch.rand(4, 96, 96) > 0.93).float()
+            # Imperfect but correlated: drop ~25% of true cells and add false ones,
+            # so IOU lands strictly between 0 and 1 and the metric is exercised.
+            pred = target * (torch.rand(4, 96, 96) > 0.25).float()
+            pred = pred + (torch.rand(4, 96, 96) > 0.98).float()
+            m.log_prediction(pred.clamp(0, 1), target, shadow_mask=torch.rand(1, 96, 96) > 0.5)
+        m.log_lead_time(float(np.random.uniform(2, 6)))
+        m.log_latency(float(np.random.uniform(10, 60)))
 
-    s = metrics.summary()
     print("EvalMetrics summary:")
-    for k, v in s.items():
+    for k, v in m.summary().items():
         print(f"  {k}: {v:.4f}")
+
+    # Empty-on-empty must score 1.0, not 0.0.
+    z = torch.zeros(1, 8, 8)
+    assert float(iou(z, z)) == 1.0, "empty/empty must be a hit"
+    print("  empty-vs-empty IOU: 1.0 ✓")
     print("EvalMetrics OK")
