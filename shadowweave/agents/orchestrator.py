@@ -1,30 +1,48 @@
-"""Orchestrator — coordinates local + global agents at 20Hz, handles stop override."""
+"""Orchestrator — coordinates local + global agents at 20Hz, handles stop override.
+
+The previous version returned ``local.act(obs)``, a 3-dim navigation vector, from a
+method documented and consumed as a 27-dim audio parameter block — its own __main__
+asserted ``shape == (27,)`` and failed. CueMapper was never called at all, so nothing
+ever converted uncertainty into audio.
+
+``step`` now returns an explicit result object with both, and the audio parameters
+genuinely come from CueMapper.
+"""
 
 from __future__ import annotations
 
 import threading
 import time
+from dataclasses import dataclass, field
 from typing import Callable, Optional
 
 import numpy as np
 from omegaconf import DictConfig
 
-from .local_agent import LocalAgent
-from .global_agent import GlobalAgent
+from ..audio.cues import AUDIO_PARAM_DIM, CueMapper
 from ..shadow.zones import pool_predictions_to_zones
+from .global_agent import GlobalAgent
+from .local_agent import LocalAgent
+
+
+@dataclass
+class OrchestratorOutput:
+    """One control tick."""
+    audio_params: np.ndarray          # (27,) for HRTFEngine.play
+    nav_action: np.ndarray            # (3,) forward / strafe / turn
+    is_stop: bool
+    max_uncertainty: float
+    waypoints: list[tuple[int, int]] = field(default_factory=list)
 
 
 class Orchestrator:
     """Runs the main 20Hz control loop, merging local and global agent outputs.
 
-    Override: if max uncertainty across all zones > cfg.agents.orchestrator.uncertainty_stop_threshold,
-    pause nav suggestions and request a distinct "stop" audio pattern.
+    Override: if max uncertainty across all zones > cfg.agents.orchestrator.
+    uncertainty_stop_threshold, pause nav suggestions and emit the distinct "stop"
+    audio pattern.
 
-    Primary method: ``step(uncertainty_grid, wm_pred) -> (audio_params, is_stop)``
-
-    Args:
-        uncertainty_grid: (9,) float32 — current shadow uncertainty per zone
-        wm_pred:          (T, H, W) float32 — world model predictions at each horizon
+    Primary method: ``step(uncertainty_grid, wm_pred) -> OrchestratorOutput``
     """
 
     def __init__(
@@ -33,11 +51,13 @@ class Orchestrator:
         local_agent: LocalAgent,
         global_agent: GlobalAgent,
         audio_callback: Optional[Callable[[np.ndarray, bool], None]] = None,
+        cue_mapper: Optional[CueMapper] = None,
     ) -> None:
         self.cfg = cfg
         self.local = local_agent
         self.global_ = global_agent
         self.audio_callback = audio_callback
+        self.cues = cue_mapper or CueMapper(cfg)
         self._waypoints: list[tuple[int, int]] = []
         self._stop_threshold = cfg.agents.orchestrator.uncertainty_stop_threshold
         self._lock = threading.Lock()
@@ -49,49 +69,73 @@ class Orchestrator:
         occupancy_pred: np.ndarray,
         start: tuple[int, int],
         goal: tuple[int, int],
-    ) -> None:
+        shadow: Optional[np.ndarray] = None,
+    ) -> list[tuple[int, int]]:
         """Called by the 2Hz global planning thread."""
-        wps = self.global_.plan(occupancy_pred, start, goal)
+        wps = self.global_.plan(occupancy_pred, start, goal, shadow=shadow)
         with self._lock:
             self._waypoints = wps
+        return wps
+
+    @property
+    def waypoints(self) -> list[tuple[int, int]]:
+        with self._lock:
+            return list(self._waypoints)
 
     def step(
         self,
         uncertainty_grid: np.ndarray,
         wm_pred: np.ndarray,
-    ) -> tuple[np.ndarray, bool]:
+        falling_mask: Optional[np.ndarray] = None,
+    ) -> OrchestratorOutput:
         """Single 20Hz step.
 
         Args:
             uncertainty_grid: (9,) current zone uncertainties
-            wm_pred:          (T, H, W) world model predictions — pooled internally to (T*9,)
+            wm_pred:          (T, S, S) world model predictions — pooled internally
+            falling_mask:     optional (9,) bool, zones with a predicted falling object
 
         Returns:
-            audio_params: (27,) float32
-            is_stop:      True if override engaged
+            OrchestratorOutput
         """
+        uncertainty_grid = np.asarray(uncertainty_grid, dtype=np.float32).ravel()
+        if uncertainty_grid.shape[0] != self._n_zones:
+            raise ValueError(
+                f"uncertainty_grid must be ({self._n_zones},), got {uncertainty_grid.shape}"
+            )
+        wm_pred = np.asarray(wm_pred, dtype=np.float32)
+        if wm_pred.ndim != 3:
+            raise ValueError(f"wm_pred must be (T, S, S), got shape {wm_pred.shape}")
+
+        if falling_mask is None:
+            falling_mask = np.zeros(self._n_zones, dtype=bool)
+
         max_uncertainty = float(uncertainty_grid.max())
+        is_stop = max_uncertainty > self._stop_threshold
 
-        if max_uncertainty > self._stop_threshold:
-            stop_audio = np.zeros(27, dtype=np.float32)
-            if self.audio_callback is not None:
-                self.audio_callback(stop_audio, True)
-            return stop_audio, True
-
-        # pool world model predictions from (T, H, W) → (T, 9) → flatten to (T*9,)
-        wm_zones = pool_predictions_to_zones(wm_pred, self._n_zones).ravel()
-        obs = np.concatenate([uncertainty_grid, wm_zones]).astype(np.float32)
-        audio_params = self.local.act(obs)
+        if is_stop:
+            audio_params = self.cues.map(uncertainty_grid, falling_mask, is_stop=True)
+            nav_action = np.zeros(3, dtype=np.float32)
+        else:
+            wm_zones = pool_predictions_to_zones(wm_pred, self._n_zones).ravel()
+            obs = np.concatenate([uncertainty_grid, wm_zones]).astype(np.float32)
+            nav_action = self.local.act(obs)
+            audio_params = self.cues.map(uncertainty_grid, falling_mask, is_stop=False)
 
         if self.audio_callback is not None:
-            self.audio_callback(audio_params, False)
+            self.audio_callback(audio_params, is_stop)
 
-        return audio_params, False
+        return OrchestratorOutput(
+            audio_params=audio_params,
+            nav_action=nav_action,
+            is_stop=is_stop,
+            max_uncertainty=max_uncertainty,
+            waypoints=self.waypoints,
+        )
 
     def run(
         self,
         frame_source: Callable[[], tuple[np.ndarray, np.ndarray]],
-        goal: tuple[int, int] = (15, 15),
         max_steps: int = 1000,
     ) -> None:
         """Blocking main loop — for testing only. Real use drives step() externally."""
@@ -100,35 +144,47 @@ class Orchestrator:
             t0 = time.monotonic()
             uncertainty_grid, wm_pred = frame_source()
             self.step(uncertainty_grid, wm_pred)
-            elapsed = time.monotonic() - t0
-            remaining = period - elapsed
+            remaining = period - (time.monotonic() - t0)
             if remaining > 0:
                 time.sleep(remaining)
 
 
 if __name__ == "__main__":
-    from omegaconf import OmegaConf
-    import pathlib
+    from ..utils import load_config
 
-    cfg_path = pathlib.Path(__file__).parents[1] / "configs" / "default.yaml"
-    cfg = OmegaConf.load(cfg_path)
-
-    H, W = cfg.depth.output_h, cfg.depth.output_w
+    cfg = load_config()
+    S = cfg.bev.size
     T = len(cfg.world_model.prediction_horizons)
-    obs_dim = cfg.shadow.grid_cells + T * cfg.shadow.grid_cells  # 9 + 36 = 45
 
-    local   = LocalAgent(cfg, obs_dim)
+    local = LocalAgent(cfg)
     global_ = GlobalAgent(cfg)
-    orch    = Orchestrator(cfg, local, global_)
+    orch = Orchestrator(cfg, local, global_)
 
     uncertainty = np.random.rand(9).astype(np.float32) * 0.5
-    wm_pred     = np.random.rand(T, H, W).astype(np.float32)
+    wm_pred = np.random.rand(T, S, S).astype(np.float32)
 
-    audio_params, is_stop = orch.step(uncertainty, wm_pred)
-    print(f"Orchestrator step: is_stop={is_stop}, audio_params shape={audio_params.shape}")
-    assert audio_params.shape == (27,)
+    out = orch.step(uncertainty, wm_pred)
+    print(f"Orchestrator step: is_stop={out.is_stop} max_unc={out.max_uncertainty:.3f}")
+    print(f"  audio_params: {out.audio_params.shape}  nav_action: {out.nav_action.shape}")
+    assert out.audio_params.shape == (AUDIO_PARAM_DIM,), out.audio_params.shape
+    assert out.nav_action.shape == (3,)
 
-    high_uncertainty = np.ones(9, dtype=np.float32) * 0.9
-    _, is_stop = orch.step(high_uncertainty, wm_pred)
-    print(f"Orchestrator stop override: is_stop={is_stop}")
+    high = np.ones(9, dtype=np.float32) * 0.9
+    stop_out = orch.step(high, wm_pred)
+    print(f"Orchestrator stop override: is_stop={stop_out.is_stop} "
+          f"nav={stop_out.nav_action}  (nav must be zero when stopped)")
+    assert stop_out.is_stop and not stop_out.nav_action.any()
+    assert stop_out.audio_params.shape == (AUDIO_PARAM_DIM,)
+
+    # Shape contract: a flattened prediction must be rejected, not silently mangled.
+    try:
+        orch.step(uncertainty, wm_pred.ravel())
+        print("  ERROR: flattened wm_pred should have raised")
+    except ValueError as e:
+        print(f"  rejects malformed wm_pred: {e}")
+
+    occ = np.zeros((32, 32), dtype=np.float32)
+    occ[10:20, 8:24] = 0.9
+    wps = orch.update_waypoints(occ, (0, 0), (31, 31))
+    print(f"  planned {len(wps)} waypoints; orchestrator sees {len(orch.waypoints)}")
     print("Orchestrator OK")
