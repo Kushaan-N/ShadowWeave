@@ -1,7 +1,12 @@
-"""Local reactive agent — MLP policy at 20Hz, trained with PPO.
+"""Local reactive agent - MLP policy at 20Hz, trained with PPO.
 
-Input:  current uncertainty vector (9,) + world model predictions (flattened)
-Output: audio cue parameters per zone — direction, intensity, pitch (9×3 = 27 floats)
+Input:  current uncertainty vector (9,) + world model zone predictions (T*9 floats)
+Output: navigation actions - (forward_vel, strafe_vel, turn_rate) in [-1, 1]
+
+Audio cues are computed downstream by CueMapper from the uncertainty grid; the agent
+emits navigation only. The orchestrator used to treat this 3-vector as if it were a
+27-dim audio parameter block, which is the contract break its own __main__ asserted
+against and failed.
 """
 
 from __future__ import annotations
@@ -11,28 +16,44 @@ import torch
 import torch.nn as nn
 from omegaconf import DictConfig
 
+NAV_ACTION_DIM = 3
+
+
+def observation_dim(cfg: DictConfig) -> int:
+    """Single source of truth for the policy's observation width.
+
+    run_eval computed this as ``grid_cells + T*H*W`` (65545) while the orchestrator
+    fed ``grid_cells + T*grid_cells`` (45), so the policy raised a shape error the
+    moment the two met.
+    """
+    n_zones = cfg.shadow.grid_cells
+    T = len(cfg.world_model.prediction_horizons)
+    return n_zones + T * n_zones
+
 
 class LocalAgent(nn.Module):
-    """3-layer MLP reactive policy.
+    """MLP reactive policy with a value head for PPO.
 
-    Primary method: ``forward(obs) -> audio_params``
-    Input:  obs (B, obs_dim) float32 — uncertainty grid + world model features
-    Output: audio_params (B, 27) float32 — (direction, intensity, pitch) × 9 zones
+    Primary method: forward(obs) -> nav_action
+    Input:  obs (B, obs_dim) float32 - uncertainty grid + world model zone predictions
+    Output: nav_action (B, 3) float32 - (forward_vel, strafe_vel, turn_rate) in [-1, 1]
     """
 
-    def __init__(self, cfg: DictConfig, obs_dim: int) -> None:
+    def __init__(self, cfg: DictConfig, obs_dim: int | None = None) -> None:
         super().__init__()
         self.cfg = cfg
+        self.obs_dim = obs_dim if obs_dim is not None else observation_dim(cfg)
         d = cfg.agents.local.hidden_dim
-        self.net = nn.Sequential(
-            nn.Linear(obs_dim, d), nn.LayerNorm(d), nn.GELU(),
-            nn.Linear(d, d),       nn.LayerNorm(d), nn.GELU(),
-            nn.Linear(d, d),       nn.LayerNorm(d), nn.GELU(),
-            nn.Linear(d, 27),      # 9 zones × 3 params
-        )
-        # separate value head for PPO critic
+        n_layers = cfg.agents.local.num_layers
+
+        layers: list[nn.Module] = [nn.Linear(self.obs_dim, d), nn.LayerNorm(d), nn.GELU()]
+        for _ in range(n_layers - 1):
+            layers += [nn.Linear(d, d), nn.LayerNorm(d), nn.GELU()]
+        layers += [nn.Linear(d, NAV_ACTION_DIM), nn.Tanh()]
+        self.net = nn.Sequential(*layers)
+
         self.value_head = nn.Sequential(
-            nn.Linear(obs_dim, d), nn.GELU(),
+            nn.Linear(self.obs_dim, d), nn.GELU(),
             nn.Linear(d, 1),
         )
 
@@ -44,45 +65,51 @@ class LocalAgent(nn.Module):
 
     @torch.no_grad()
     def act(self, obs: np.ndarray) -> np.ndarray:
-        """Numpy in → numpy out, for the 20Hz control loop."""
-        t = torch.from_numpy(obs).float().unsqueeze(0)
-        return self.net(t).squeeze(0).numpy()
+        """Numpy in, numpy out, for the 20Hz control loop."""
+        device = next(self.parameters()).device
+        t = torch.from_numpy(np.asarray(obs, dtype=np.float32)).unsqueeze(0).to(device)
+        return self.net(t).squeeze(0).cpu().numpy()
 
 
 def compute_reward(
     collision: bool,
-    path_efficiency: float,
-    active_zones: int,
+    distance_moved: float,
     cfg: DictConfig,
+    progress: float = 0.0,
+    shadow_exposure: float = 0.0,
 ) -> float:
-    """PPO reward function — see agent spec in CLAUDE.md."""
+    """PPO reward.
+
+    ``collision`` must be a real geometric overlap. train_rl.py previously derived it
+    from ``occupancy.max() > 0.5``, and since walls were always marked 1.0 that was
+    True on every step — the agent received a constant -10 and could not learn.
+    """
     r = 0.0
     if collision:
         r += cfg.agents.local.reward_collision_weight
-    r += cfg.agents.local.reward_efficiency_weight * path_efficiency
-    if active_zones > cfg.agents.local.max_simultaneous_cues:
-        r += cfg.agents.local.reward_audio_clarity_weight * (active_zones - cfg.agents.local.max_simultaneous_cues)
-    return r
+    r += cfg.agents.local.reward_efficiency_weight * distance_moved
+    r += cfg.agents.local.reward_progress_weight * progress
+    r += cfg.agents.local.reward_shadow_weight * shadow_exposure
+    return float(r)
 
 
 if __name__ == "__main__":
-    from omegaconf import OmegaConf
-    import pathlib
+    from ..utils import count_parameters, load_config
 
-    cfg_path = pathlib.Path(__file__).parents[1] / "configs" / "default.yaml"
-    cfg = OmegaConf.load(cfg_path)
+    cfg = load_config()
+    obs_dim = observation_dim(cfg)
+    print(f"LocalAgent obs_dim={obs_dim}  (9 zones + {len(cfg.world_model.prediction_horizons)}x9 horizons)")
 
-    T = len(cfg.world_model.prediction_horizons)
-    # 9 current zones + T * 9 pooled world-model predictions (not raw H*W pixels)
-    obs_dim = cfg.shadow.grid_cells + T * cfg.shadow.grid_cells
-
-    print(f"LocalAgent obs_dim={obs_dim}")
-    agent = LocalAgent(cfg, obs_dim)
-    param_count = sum(p.numel() for p in agent.parameters()) / 1e6
-    print(f"  Parameters: {param_count:.3f}M")
+    agent = LocalAgent(cfg)
+    print(f"  Parameters: {count_parameters(agent)/1e6:.3f}M")
 
     dummy_obs = np.random.rand(obs_dim).astype(np.float32)
-    audio_params = agent.act(dummy_obs)
-    print(f"  obs: {dummy_obs.shape} → audio_params: {audio_params.shape}")
-    print(f"  sample reward: {compute_reward(False, 0.8, 2, cfg):.2f}")
+    nav_action = agent.act(dummy_obs)
+    print(f"  obs: {dummy_obs.shape} -> nav_action: {nav_action.shape} (forward, strafe, turn)")
+    assert nav_action.shape == (NAV_ACTION_DIM,)
+    assert np.all(np.abs(nav_action) <= 1.0)
+
+    print(f"  reward (clear, moving):    {compute_reward(False, 0.8, cfg, progress=0.1):.2f}")
+    print(f"  reward (collision):        {compute_reward(True, 0.8, cfg, progress=0.1):.2f}")
+    print(f"  reward (deep in shadow):   {compute_reward(False, 0.8, cfg, shadow_exposure=1.0):.2f}")
     print("LocalAgent OK")
