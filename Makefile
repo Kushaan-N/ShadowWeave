@@ -1,4 +1,4 @@
-.PHONY: help setup test smoke data train rl eval dashboard preflight demos clean clean-data
+.PHONY: help setup test smoke bench data train rl eval dashboard preflight demos clean clean-data
 
 PYTHON ?= python
 EPISODES ?= 400
@@ -9,6 +9,7 @@ help:
 	@echo "  make setup       install the package in editable mode"
 	@echo "  make test        run the pytest suite"
 	@echo "  make smoke       end-to-end pipeline smoke test (no training needed)"
+	@echo "  make bench       throughput/memory benchmark to size batch and workers"
 	@echo "  make demos       run every module's standalone demo"
 	@echo "  make preflight   verify this machine/node can run everything"
 	@echo "  make data        generate rollouts (EPISODES=$(EPISODES))"
@@ -27,6 +28,9 @@ test:
 
 smoke:
 	$(PYTHON) scripts/pipeline_test.py --frames 10
+
+bench:
+	$(PYTHON) scripts/benchmark.py --data $(shell $(PYTHON) -c "print('data/rollouts')")
 
 preflight:
 	$(PYTHON) slurm/preflight.py
