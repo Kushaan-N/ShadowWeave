@@ -87,7 +87,8 @@ class SyntheticDataGenerator:
     def __init__(self, cfg: DictConfig, device: Optional[torch.device] = None) -> None:
         self.cfg = cfg
         self.device = device or get_device()
-        self.env = ShadowWeaveEnv(cfg)
+        # Rollouts never read the RGB frame, and rendering it doubles the readPixels cost.
+        self.env = ShadowWeaveEnv(cfg, render_rgb=False)
         self.horizons = list(cfg.world_model.prediction_horizons)
         self.fps = cfg.sim.fps
 
@@ -95,15 +96,24 @@ class SyntheticDataGenerator:
         self.raycaster = ShadowRaycaster(cfg).to(self.device).eval()
 
     @torch.no_grad()
-    def _observe(self, depth: np.ndarray) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
-        d = torch.from_numpy(depth).unsqueeze(0).unsqueeze(0).to(self.device)
-        occ, vis = self.projector(d)
-        unc = self.raycaster.forward_from_depth(d)
-        return (
-            occ[0, 0].cpu().numpy(),
-            vis[0, 0].cpu().numpy(),
-            unc[0].cpu().numpy(),
-        )
+    def _observe_batch(
+        self, depths: list[np.ndarray], chunk: int = 64
+    ) -> tuple[np.ndarray, np.ndarray, np.ndarray]:
+        """Project a whole episode at once.
+
+        Per-frame calls left the GPU idle between launches; batching turns hundreds of
+        tiny kernels into a handful of large ones. Chunked so a long episode at a
+        large bev.size cannot exhaust device memory.
+        """
+        occs, viss, uncs = [], [], []
+        for i in range(0, len(depths), chunk):
+            d = torch.from_numpy(np.stack(depths[i : i + chunk])).unsqueeze(1).to(self.device)
+            occ, vis = self.projector(d)
+            unc = self.raycaster.forward_from_depth(d)
+            occs.append(occ[:, 0].cpu().numpy())
+            viss.append(vis[:, 0].cpu().numpy())
+            uncs.append(unc.cpu().numpy())
+        return np.concatenate(occs), np.concatenate(viss), np.concatenate(uncs)
 
     def generate(
         self,
@@ -154,19 +164,17 @@ class SyntheticDataGenerator:
             unc_grid = np.zeros((T, self.cfg.shadow.grid_cells), dtype=np.float32)
             coll = np.zeros((T,), dtype=np.bool_)
 
-            prev_occ: Optional[torch.Tensor] = None
+            occ_all, vis_all, unc_all = self._observe_batch(depths[:T])
+            bev_occ[:, 0] = occ_all
+            bev_vis[:, 0] = vis_all
+            unc_grid[:] = unc_all
+            coll[:] = collisions[:T]
+
+            # Flow is a plain temporal difference, so the whole stack does at once.
+            occ_t_all = torch.from_numpy(occ_all).unsqueeze(1)
+            bev_flw[1:] = bev_flow(occ_t_all[:-1], occ_t_all[1:]).numpy()
+
             for t in range(T):
-                occ_t, vis_t, unc_t = self._observe(depths[t])
-                bev_occ[t, 0] = occ_t
-                bev_vis[t, 0] = vis_t
-                unc_grid[t] = unc_t
-                coll[t] = collisions[t]
-
-                cur = torch.from_numpy(occ_t).view(1, 1, S, S)
-                if prev_occ is not None:
-                    bev_flw[t] = bev_flow(prev_occ, cur)[0].numpy()
-                prev_occ = cur
-
                 pos_t, yaw_t = poses[t]
                 for hi, hf in enumerate(horizon_frames):
                     fi = min(t + hf, len(snaps) - 1)
