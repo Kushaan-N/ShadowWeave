@@ -65,6 +65,7 @@ def save_checkpoint(
     scheduler: Optional[Any] = None,
     scaler: Optional[Any] = None,
     metrics: Optional[dict[str, float]] = None,
+    extra: Optional[dict[str, Any]] = None,
 ) -> None:
     """Save weights *with* the config that produced them.
 
@@ -87,7 +88,13 @@ def save_checkpoint(
         payload["scheduler"] = scheduler.state_dict()
     if scaler is not None:
         payload["scaler"] = scaler.state_dict()
-    torch.save(payload, path)
+    if extra:
+        payload.update(extra)
+    # Write-then-rename: a job killed mid-save must not leave a truncated checkpoint
+    # where the resume path expects a valid one.
+    tmp = path.with_suffix(path.suffix + ".tmp")
+    torch.save(payload, tmp)
+    os.replace(tmp, path)
 
 
 def load_checkpoint(path: str | pathlib.Path, map_location: Any = "cpu") -> dict[str, Any]:
