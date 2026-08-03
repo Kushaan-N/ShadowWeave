@@ -35,6 +35,7 @@ from ..utils import (
     seed_everything,
 )
 from ..world_model.diffusion import build_world_model
+from .baselines import BaselineComparison, LeadTimeTracker, calibration_error
 from .metrics import EvalMetrics
 
 
@@ -84,6 +85,9 @@ def run_eval(
     orch = Orchestrator(cfg, local_agent, GlobalAgent(cfg))
     horizons = list(cfg.world_model.prediction_horizons)
     metrics = EvalMetrics(horizons=horizons)
+    baselines = BaselineComparison(horizons)
+    lead_tracker = LeadTimeTracker()
+    ece_samples: list[float] = []
     S = cfg.bev.size
     steps = cfg.eval.steps_per_episode
     fps = cfg.sim.fps
@@ -99,7 +103,8 @@ def run_eval(
             n_collisions = 0
             path_length = 0.0
             start_pos = obs["agent_pos"].copy()
-            pending: list[tuple[int, np.ndarray]] = []  # (issued_step, predicted probs)
+            # (issued_step, probs, pose_at_issue, shadow_mask_at_issue)
+            pending: list[tuple[int, np.ndarray, tuple, torch.Tensor]] = []
 
             for step in range(steps):
                 t0 = time.perf_counter()
@@ -117,19 +122,40 @@ def run_eval(
                 out = orch.step(uncertainty, pred_np)
                 metrics.log_latency((time.perf_counter() - t0) * 1000.0)
 
+                # Persistence baseline predicts "whatever I observe now, unchanged".
+                baselines.set_observation(occ[0])
+
                 # Score each prediction when it comes due, against the ground truth at
                 # that moment — not against the present frame the way it used to.
-                shadow_mask = (vis[0] < 0.5).cpu()
-                truth = torch.from_numpy(obs["bev_occupancy"]).unsqueeze(0)
-                for issued, probs in list(pending):
+                #
+                # Critically, the truth must be rendered in the pose the agent held
+                # when the prediction was ISSUED. The model is trained to answer "what
+                # will be here, in the frame I am standing in now"; comparing against
+                # obs["bev_occupancy"], which is in the pose at t+h, compares two
+                # different coordinate frames (measured IOU 0.009 between them) and
+                # drives every score to zero regardless of model quality.
+                snapshot_now = env.geom_snapshot()
+                for entry in list(pending):
+                    issued, probs, (p_pos, p_yaw), p_shadow = entry
                     ready = [i for i, h in enumerate(horizons) if issued + int(h * fps) == step]
-                    for hi in ready:
-                        metrics.log_prediction(
-                            torch.from_numpy(probs[hi]).unsqueeze(0), truth, shadow_mask
-                        )
+                    if ready:
+                        truth = torch.from_numpy(
+                            env.bev_occupancy(p_pos, p_yaw, snapshot_now)
+                        ).unsqueeze(0)
+                        for hi in ready:
+                            pred_t = torch.from_numpy(probs[hi]).unsqueeze(0)
+                            metrics.log_prediction(pred_t, truth, p_shadow)
+                            baselines.log(hi, probs[hi], truth, p_shadow)
+                            ece_samples.append(calibration_error(pred_t, truth))
                     if step - issued >= int(max(horizons) * fps):
-                        pending.remove((issued, probs))
-                pending.append((step, pred_np))
+                        pending.remove(entry)
+                pending.append((
+                    step, pred_np,
+                    (obs["agent_pos"].copy(), obs["agent_yaw"]),
+                    (vis[0] < 0.5).cpu(),
+                ))
+
+                lead_tracker.observe(step, pred_np, obs, horizons, fps)
 
                 prev = obs["agent_pos"].copy()
                 obs = env.step(action=out.nav_action)
@@ -146,9 +172,29 @@ def run_eval(
 
     env.close()
     summary = metrics.summary()
+    summary.update(baselines.summary())
+    summary.update(lead_tracker.summary())
+    if ece_samples:
+        summary["calibration_error"] = float(np.mean(ece_samples))
+
     print("\nEval results:")
     for k, v in summary.items():
         print(f"  {k}: {v:.4f}")
+
+    print("\nModel vs baselines (IOU):")
+    header = f"  {'horizon':>8}  {'model':>7}  {'persist':>8}  {'empty':>7}  {'gain':>7}"
+    print(header)
+    for hi, h in enumerate(horizons):
+        label = f"{h:g}s"
+        model_v = summary.get(f"iou_{label}")
+        if model_v is None:
+            continue
+        print(f"  {label:>8}  {model_v:7.3f}  "
+              f"{summary.get(f'baseline_persistence_iou_{label}', float('nan')):8.3f}  "
+              f"{summary.get(f'baseline_empty_iou_{label}', float('nan')):7.3f}  "
+              f"{summary.get(f'model_gain_over_best_baseline_{label}', float('nan')):+7.3f}")
+    print("\n  A positive gain is the bar: it means the world model learned dynamics")
+    print("  rather than echoing what it already sees.")
 
     results_dir = pathlib.Path(cfg.eval.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
