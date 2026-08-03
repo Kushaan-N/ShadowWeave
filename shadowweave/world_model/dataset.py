@@ -11,6 +11,7 @@ holding a full decompressed copy.
 
 from __future__ import annotations
 
+import os
 import pathlib
 from typing import Optional
 
@@ -63,7 +64,12 @@ class RolloutDataset(Dataset):
             self._index.extend((fi, t) for t in range(n))
 
     def _materialise(self) -> None:
-        """Extract each .npz field to a .npy sidecar once, so it can be mmapped."""
+        """Extract each .npz field to a .npy sidecar once, so it can be mmapped.
+
+        Writes go through a temporary file and an atomic rename. Under DDP every rank
+        constructs the dataset simultaneously, so without this they would race writing
+        the same sidecar and readers could observe a half-written array.
+        """
         self.cache_dir.mkdir(parents=True, exist_ok=True)
         self._lengths: list[int] = []
         for fi, f in enumerate(self.files):
@@ -84,11 +90,23 @@ class RolloutDataset(Dataset):
                     )
                 for key in _ARRAYS:
                     if key in data:
-                        np.save(f"{stem}__{key}.npy", data[key])
+                        self._atomic_save(f"{stem}__{key}.npy", data[key])
                 n = int(data["bev_occupancy"].shape[0])
-            np.save(f"{stem}__len.npy", np.array(n))
+            self._atomic_save(f"{stem}__len.npy", np.array(n))
+            # The marker is written last, so a rank that sees it knows every sidecar
+            # for this episode is already complete.
             marker.touch()
             self._lengths.append(n)
+
+    @staticmethod
+    def _atomic_save(path: str, array: np.ndarray) -> None:
+        p = pathlib.Path(path)
+        if p.exists():
+            return
+        # Unique per process so concurrent ranks cannot share a temp file.
+        tmp = p.with_suffix(f".tmp{os.getpid()}.npy")
+        np.save(tmp, array)
+        os.replace(tmp, p)  # atomic within a filesystem
 
     def _get_map(self, fi: int, key: str) -> np.memmap:
         cached = self._maps.get((fi, key))
