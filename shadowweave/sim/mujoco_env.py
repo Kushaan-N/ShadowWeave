@@ -78,6 +78,8 @@ _OBSTACLE_PREFIXES = ("obs_", "mover_", "debris_", "wall_")
 
 _N_MOVERS = 3
 _N_DEBRIS = 6
+# Returned in place of a real frame when RGB rendering is switched off.
+_EMPTY_RGB = np.zeros((1, 1, 3), dtype=np.uint8)
 # Debris waits here until its scheduled release. Well above the body band, so a held
 # piece contributes nothing to occupancy until it actually starts falling.
 _DEBRIS_HOLD_Z = 6.0
@@ -149,8 +151,9 @@ class ShadowWeaveEnv:
         min_clearance: float — metres to the nearest obstacle surface
     """
 
-    def __init__(self, cfg: DictConfig) -> None:
+    def __init__(self, cfg: DictConfig, render_rgb: bool = True) -> None:
         self.cfg = cfg
+        self.render_rgb = render_rgb
         self._model: Any = None
         self._data: Any = None
         self._renderer: Any = None
@@ -162,6 +165,8 @@ class ShadowWeaveEnv:
         self._frame = 0
         self._movers: list[dict] = []
         self._debris: list[dict] = []
+        self._ego_grid_cache: Optional[tuple[np.ndarray, np.ndarray]] = None
+        self._active_cache: dict[int, np.ndarray] = {}
 
         if not _MUJOCO_AVAILABLE:
             print("[ShadowWeaveEnv] mujoco not installed — running in dummy mode.")
@@ -214,6 +219,7 @@ class ShadowWeaveEnv:
         self._frame = 0
         self._movers = []
         self._debris = []
+        self._active_cache = {}
         self._init_movers()
         self._init_debris()
         self._update_scripted_bodies()
@@ -388,8 +394,14 @@ class ShadowWeaveEnv:
     # ------------------------------------------------------------------
 
     def _render_obs(self) -> dict[str, Any]:
-        self._renderer.update_scene(self._data, camera=self._cam_id)
-        rgb = self._renderer.render().copy()
+        # RGB costs a second full mjr_readPixels pass and is unused by data
+        # generation and RL — only the dashboard needs it. Profiling put the two
+        # passes at ~29% of rollout wall-clock.
+        if self.render_rgb:
+            self._renderer.update_scene(self._data, camera=self._cam_id)
+            rgb = self._renderer.render().copy()
+        else:
+            rgb = _EMPTY_RGB
 
         self._renderer.enable_depth_rendering()
         self._renderer.update_scene(self._data, camera=self._cam_id)
@@ -457,20 +469,23 @@ class ShadowWeaveEnv:
     # Ground-truth egocentric BEV
     # ------------------------------------------------------------------
 
+    def _ego_grid(self) -> tuple[np.ndarray, np.ndarray]:
+        """Ego-frame (z_forward, x_right) cell centres, cached — pose-independent."""
+        if self._ego_grid_cache is None:
+            S = self.cfg.bev.size
+            rng_m = self.cfg.bev.range_m
+            cell = rng_m / S
+            ez = np.linspace(rng_m - cell / 2, cell / 2, S, dtype=np.float32)
+            ex = np.linspace(-rng_m / 2 + cell / 2, rng_m / 2 - cell / 2, S, dtype=np.float32)
+            self._ego_grid_cache = np.meshgrid(ez, ex, indexing="ij")
+        return self._ego_grid_cache
+
     def _bev_grid_world(self, pos: np.ndarray, yaw: float) -> tuple[np.ndarray, np.ndarray]:
         """World XY of every BEV cell centre for a given pose. (S, S) each."""
-        S = self.cfg.bev.size
-        rng_m = self.cfg.bev.range_m
-        cell = rng_m / S
-        ez = np.linspace(rng_m - cell / 2, cell / 2, S, dtype=np.float32)
-        ex = np.linspace(-rng_m / 2 + cell / 2, rng_m / 2 - cell / 2, S, dtype=np.float32)
-        zz, xx = np.meshgrid(ez, ex, indexing="ij")
-
+        zz, xx = self._ego_grid()
         fx, fy = -math.sin(yaw), math.cos(yaw)
         rx, ry = math.cos(yaw), math.sin(yaw)
-        wx = pos[0] + zz * fx + xx * rx
-        wy = pos[1] + zz * fy + xx * ry
-        return wx, wy
+        return pos[0] + zz * fx + xx * rx, pos[1] + zz * fy + xx * ry
 
     def geom_snapshot(self) -> dict[str, np.ndarray]:
         """Freeze obstacle geometry for this instant.
@@ -510,19 +525,41 @@ class ShadowWeaveEnv:
         snap = self.geom_snapshot() if snapshot is None else snapshot
 
         wx, wy = self._bev_grid_world(pos, yaw)
-        occ = np.zeros_like(wx, dtype=np.float32)
+        occ = np.zeros(wx.shape, dtype=np.float32)
         z_lo, z_hi = 0.05, float(self.cfg.sim.camera_height) + 0.4
 
-        for i in range(len(snap["type"])):
-            gpos, gsize, gtype = snap["xpos"][i], snap["size"][i], int(snap["type"][i])
-            half_z = self._geom_half_height(gtype, gsize)
-            # Height gate: a geom only blocks the agent while it overlaps the body
-            # band. This is what lets falling debris enter the target over time.
-            if gpos[2] + half_z < z_lo or gpos[2] - half_z > z_hi:
-                continue
-            occ = np.maximum(occ, self._footprint(gtype, gpos, snap["xmat"][i], gsize, wx, wy))
-
+        # Height gate, vectorised over geoms: a geom only blocks the agent while it
+        # overlaps the body band. This is what lets falling debris enter the target
+        # over time, and it usually rules out most geoms before any rasterisation.
+        active = self._active_geoms(snap, z_lo, z_hi)
+        for i in active:
+            occ = np.maximum(
+                occ,
+                self._footprint(int(snap["type"][i]), snap["xpos"][i], snap["xmat"][i],
+                                snap["size"][i], wx, wy),
+            )
         return occ
+
+    def _active_geoms(self, snap: dict[str, np.ndarray], z_lo: float, z_hi: float) -> np.ndarray:
+        n = len(snap["type"])
+        if n == 0:
+            return np.empty(0, dtype=int)
+        key = id(snap)
+        cached = self._active_cache.get(key)
+        if cached is not None:
+            return cached
+        sizes, types = snap["size"], snap["type"]
+        half_z = np.empty(n, dtype=np.float64)
+        for i in range(n):
+            half_z[i] = self._geom_half_height(int(types[i]), sizes[i])
+        z = snap["xpos"][:, 2]
+        active = np.nonzero((z + half_z >= z_lo) & (z - half_z <= z_hi))[0]
+        # Data generation renders the same snapshot into many timesteps' targets, so
+        # the gate is worth memoising. Bounded so long rollouts cannot grow it freely.
+        if len(self._active_cache) > 512:
+            self._active_cache.clear()
+        self._active_cache[key] = active
+        return active
 
     def _geom_half_height(self, gtype: int, size: np.ndarray) -> float:
         if gtype == mujoco.mjtGeom.mjGEOM_BOX:
