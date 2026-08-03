@@ -22,7 +22,8 @@ conda activate shadowweave
 pip install -e .
 
 python scripts/pipeline_test.py         # end-to-end smoke test, no training needed
-pytest -q                               # 73 tests
+python scripts/benchmark.py             # size batch/workers before booking GPU time
+pytest -q                               # 84 tests
 ```
 
 Every module also runs standalone with a demo:
@@ -138,9 +139,10 @@ shadowweave/
 ├── audio/         hrtf.py, cues.py
 ├── sim/           mujoco_env.py, synthetic_data.py
 ├── dashboard/     app.py (Gradio)
-├── eval/          metrics.py, run_eval.py
+├── eval/          metrics.py, baselines.py, run_eval.py
 └── configs/       default.yaml — all hyperparameters
 slurm/             sbatch scripts, env.sh, preflight.py
+scripts/           pipeline_test.py (smoke), benchmark.py (throughput)
 tests/             pytest suite
 ```
 
@@ -164,6 +166,29 @@ python -m shadowweave.world_model.train --overrides world_model.lr=3e-4 bev.size
 | Dashboard render rate | ≥ 5Hz | ✅ `gr.Timer` at 5Hz |
 
 Latency measured on Apple M-series MPS; a CUDA node is faster.
+
+### Reading the eval output
+
+IOU alone is not interpretable here — BEV targets are ~7% positive, so predicting
+*nothing* already scores well on near-empty frames, and echoing the current
+observation scores well wherever nothing moves. `run_eval` therefore reports every
+horizon against two baselines:
+
+| column | meaning |
+|---|---|
+| `persist` | echo the currently observed occupancy, unchanged |
+| `empty` | predict free space everywhere |
+| `gain` | model minus the strongest baseline — **this is the number that matters** |
+
+A negative gain means the world model has not learned dynamics, however good its raw
+IOU looks. The same comparison is reported restricted to shadow cells
+(`shadow_iou_*`), which is where the project's actual claim lives.
+
+`falling_detection_rate` must be read together with `falling_false_alarm_rate`: a
+model that predicts "occupied everywhere" detects every falling object trivially.
+`falling_detection_margin` is the difference and is the honest figure.
+`calibration_error` catches a model that is confidently wrong — which matters more
+than usual for a system whose entire output is an uncertainty signal.
 
 ---
 
