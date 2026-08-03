@@ -61,6 +61,46 @@ def _maybe_init_distributed() -> tuple[int, int, int]:
     return 0, 1, 0
 
 
+class EMA:
+    """Exponential moving average of the weights.
+
+    Averaged weights are consistently a little better than the final SGD iterate at
+    essentially no training cost, which matters when a full run costs cluster hours.
+    The decay is warmed up so the average is not dominated by the random init.
+    """
+
+    def __init__(self, model: torch.nn.Module, decay: float) -> None:
+        self.decay = decay
+        self.steps = 0
+        self.shadow = {k: v.detach().clone().float()
+                       for k, v in model.state_dict().items() if v.dtype.is_floating_point}
+
+    @torch.no_grad()
+    def update(self, model: torch.nn.Module) -> None:
+        self.steps += 1
+        d = min(self.decay, (1 + self.steps) / (10 + self.steps))
+        for k, v in model.state_dict().items():
+            if k in self.shadow:
+                self.shadow[k].mul_(d).add_(v.detach().float(), alpha=1 - d)
+
+    def copy_to(self, model: torch.nn.Module) -> dict[str, torch.Tensor]:
+        """Swap EMA weights in, returning the originals so they can be restored."""
+        backup = {k: v.detach().clone() for k, v in model.state_dict().items()
+                  if k in self.shadow}
+        model.load_state_dict({**model.state_dict(),
+                               **{k: v.to(dtype=backup[k].dtype) for k, v in self.shadow.items()}})
+        return backup
+
+    def restore(self, model: torch.nn.Module, backup: dict[str, torch.Tensor]) -> None:
+        model.load_state_dict({**model.state_dict(), **backup})
+
+    def state_dict(self) -> dict:
+        return {"decay": self.decay, "steps": self.steps, "shadow": self.shadow}
+
+    def load_state_dict(self, state: dict) -> None:
+        self.decay, self.steps, self.shadow = state["decay"], state["steps"], state["shadow"]
+
+
 def _lr_at(step: int, cfg: DictConfig, total_steps: int) -> float:
     """Linear warmup then cosine decay. Warmup matters here because pos_weight makes
     the first few batches produce very large gradients."""
@@ -83,14 +123,24 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
     if is_main:
         print(f"Training WorldModel on {device} (world_size={world_size}, amp={use_amp})")
 
+    ckpt_dir = pathlib.Path(cfg.world_model.checkpoint_dir)
+    ckpt_dir.mkdir(parents=True, exist_ok=True)
+
     wandb = None
     if is_main and cfg.wandb.mode != "disabled":
         try:
             import wandb as _wandb
+            # Persist the run id so a requeued job continues the same run instead of
+            # littering the project with a fresh run per requeue.
+            id_file = ckpt_dir / "wandb_run_id.txt"
+            run_id = id_file.read_text().strip() if id_file.exists() else _wandb.util.generate_id()
+            id_file.write_text(run_id)
             _wandb.init(
                 project=cfg.wandb.project,
                 entity=cfg.wandb.entity,
                 mode=cfg.wandb.mode,
+                id=run_id,
+                resume="allow",
                 config=OmegaConf.to_container(cfg, resolve=True),
             )
             wandb = _wandb
@@ -129,8 +179,8 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     pos_weight = torch.tensor(cfg.world_model.pos_weight, device=device)
 
-    ckpt_dir = pathlib.Path(cfg.world_model.checkpoint_dir)
-    ckpt_dir.mkdir(parents=True, exist_ok=True)
+    raw = model.module if world_size > 1 else model
+    ema = EMA(raw, cfg.world_model.ema_decay) if cfg.world_model.ema else None
 
     start_epoch, best_val, best_iou, bad_epochs, global_step = 0, float("inf"), 0.0, 0, 0
     if resume and pathlib.Path(resume).exists():
@@ -140,10 +190,15 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
             opt.load_state_dict(state["optimizer"])
         if "scaler" in state and use_amp:
             scaler.load_state_dict(state["scaler"])
+        if ema is not None and "ema" in state:
+            ema.load_state_dict(state["ema"])
         start_epoch = state.get("epoch", 0) + 1
         best_val = state.get("metrics", {}).get("val_loss", float("inf"))
+        # Without this the LR schedule restarts from warmup on every requeue, so a
+        # job that gets requeued a few times never leaves the warmup ramp.
+        global_step = start_epoch * len(train_dl)
         if is_main:
-            print(f"  Resumed from {resume} at epoch {start_epoch}")
+            print(f"  Resumed from {resume} at epoch {start_epoch} (step {global_step})")
 
     total_steps = max(cfg.world_model.epochs * len(train_dl), 1)
     summary: dict[str, float] = {}
@@ -179,6 +234,8 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
             torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.world_model.grad_clip)
             scaler.step(opt)
             scaler.update()
+            if ema is not None:
+                ema.update(raw)
 
             train_loss += loss.item()
             global_step += 1
@@ -190,6 +247,8 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
         train_loss /= max(len(train_dl), 1)
 
         # ── validation ────────────────────────────────────────────────
+        # Validate the averaged weights — they are what gets shipped.
+        ema_backup = ema.copy_to(raw) if ema is not None else None
         model.eval()
         val_loss = 0.0
         n_h = len(cfg.world_model.prediction_horizons)
@@ -233,15 +292,22 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
 
             raw_model = model.module if world_size > 1 else model
             metrics = {"val_loss": val_loss, "train_loss": train_loss, **iou_log}
+            extra = {"ema": ema.state_dict()} if ema is not None else None
             save_checkpoint(ckpt_dir / "last.pt", raw_model, cfg, epoch=epoch,
-                            optimizer=opt, scaler=scaler if use_amp else None, metrics=metrics)
+                            optimizer=opt, scaler=scaler if use_amp else None,
+                            metrics=metrics, extra=extra)
             if val_loss < best_val:
                 best_val, best_iou, bad_epochs = val_loss, target_iou, 0
                 save_checkpoint(ckpt_dir / "best.pt", raw_model, cfg, epoch=epoch,
-                                optimizer=opt, scaler=scaler if use_amp else None, metrics=metrics)
+                                optimizer=opt, scaler=scaler if use_amp else None,
+                                metrics=metrics, extra=extra)
             else:
                 bad_epochs += 1
             summary = metrics
+
+        # Put the live weights back before the next epoch trains on them.
+        if ema is not None and ema_backup is not None:
+            ema.restore(raw, ema_backup)
 
         # Every rank must agree on stopping or the collective ops deadlock.
         stop = torch.tensor([1 if bad_epochs >= cfg.world_model.early_stop_patience else 0],
@@ -255,6 +321,8 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
 
     if is_main:
         raw_model = model.module if world_size > 1 else model
+        if ema is not None:
+            ema.copy_to(raw_model)  # ship the averaged weights
         save_checkpoint(ckpt_dir / "final.pt", raw_model, cfg, epoch=cfg.world_model.epochs - 1,
                         metrics=summary)
         print(f"Training done. Best val loss: {best_val:.4f}  IOU@{cfg.eval.iou_horizon}s: {best_iou:.3f}")
