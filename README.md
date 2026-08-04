@@ -23,7 +23,16 @@ pip install -e .
 
 python scripts/pipeline_test.py         # end-to-end smoke test, no training needed
 python scripts/benchmark.py             # size batch/workers before booking GPU time
-pytest -q                               # 84 tests
+pytest -q                               # 113 tests
+```
+
+After a run:
+
+```bash
+python scripts/report.py                       # scored table vs the project targets
+python scripts/report.py --markdown report.md  # same, as markdown
+python scripts/report.py --compare results/a.json results/b.json
+python scripts/visualize.py                    # BEV prediction figures -> results/figures/
 ```
 
 Every module also runs standalone with a demo:
@@ -141,8 +150,9 @@ shadowweave/
 ├── dashboard/     app.py (Gradio)
 ├── eval/          metrics.py, baselines.py, run_eval.py
 └── configs/       default.yaml — all hyperparameters
+├── console.py     terminal tables/progress (degrades to plain text in SLURM logs)
 slurm/             sbatch scripts, env.sh, preflight.py
-scripts/           pipeline_test.py (smoke), benchmark.py (throughput)
+scripts/           pipeline_test.py, benchmark.py, report.py, visualize.py
 tests/             pytest suite
 ```
 
