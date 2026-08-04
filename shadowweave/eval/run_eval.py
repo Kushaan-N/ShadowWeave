@@ -15,12 +15,14 @@ from __future__ import annotations
 import argparse
 import json
 import pathlib
+import sys
 import time
 
 import numpy as np
 import torch
 from omegaconf import DictConfig
 
+from ..console import Progress, rule
 from ..agents.global_agent import GlobalAgent
 from ..agents.local_agent import LocalAgent
 from ..agents.orchestrator import Orchestrator
@@ -92,10 +94,25 @@ def run_eval(
     steps = cfg.eval.steps_per_episode
     fps = cfg.sim.fps
 
+    # A horizon needs h*fps frames to elapse before it can be scored at all. With the
+    # default 200-step episode the 10s horizon never came due and simply vanished
+    # from the results with no indication anything was missing.
+    unscorable = [h for h in horizons if int(h * fps) >= steps]
+    if unscorable:
+        needed = int(max(unscorable) * fps) + 1
+        print(f"\n[WARNING] horizons {unscorable} need {needed} steps/episode but "
+              f"eval.steps_per_episode={steps}.")
+        print(f"          They will NOT appear in the results. To score them:"
+              f"  --overrides eval.steps_per_episode={needed}")
+
+    n_tiers = len(cfg.eval.difficulty_tiers)
+    per_tier = max(n_episodes // n_tiers, 1)
+    progress = Progress(per_tier * n_tiers, "  episodes")
+
     for tier in cfg.eval.difficulty_tiers:
         cfg.sim.difficulty = tier
-        ep_in_tier = max(n_episodes // len(cfg.eval.difficulty_tiers), 1)
-        print(f"\nEvaluating difficulty={tier} ({ep_in_tier} episodes)")
+        ep_in_tier = per_tier
+        print(f"\n{rule(f'difficulty = {tier}  ({ep_in_tier} episodes)')}")
 
         for ep in range(ep_in_tier):
             obs = env.reset(seed=10_000 + ep)
@@ -103,8 +120,8 @@ def run_eval(
             n_collisions = 0
             path_length = 0.0
             start_pos = obs["agent_pos"].copy()
-            # (issued_step, probs, pose_at_issue, shadow_mask_at_issue)
-            pending: list[tuple[int, np.ndarray, tuple, torch.Tensor]] = []
+            # (issued_step, probs, pose_at_issue, shadow_at_issue, observed_at_issue)
+            pending: list[tuple[int, np.ndarray, tuple, torch.Tensor, torch.Tensor]] = []
 
             for step in range(steps):
                 t0 = time.perf_counter()
@@ -122,9 +139,6 @@ def run_eval(
                 out = orch.step(uncertainty, pred_np)
                 metrics.log_latency((time.perf_counter() - t0) * 1000.0)
 
-                # Persistence baseline predicts "whatever I observe now, unchanged".
-                baselines.set_observation(occ[0])
-
                 # Score each prediction when it comes due, against the ground truth at
                 # that moment — not against the present frame the way it used to.
                 #
@@ -136,7 +150,7 @@ def run_eval(
                 # drives every score to zero regardless of model quality.
                 snapshot_now = env.geom_snapshot()
                 for entry in list(pending):
-                    issued, probs, (p_pos, p_yaw), p_shadow = entry
+                    issued, probs, (p_pos, p_yaw), p_shadow, p_obs = entry
                     ready = [i for i, h in enumerate(horizons) if issued + int(h * fps) == step]
                     if ready:
                         truth = torch.from_numpy(
@@ -145,7 +159,9 @@ def run_eval(
                         for hi in ready:
                             pred_t = torch.from_numpy(probs[hi]).unsqueeze(0)
                             metrics.log_prediction(pred_t, truth, p_shadow)
-                            baselines.log(hi, probs[hi], truth, p_shadow)
+                            # Persistence is judged on what was visible when this
+                            # prediction was made, not on the present frame.
+                            baselines.log(hi, probs[hi], truth, p_shadow, observed_at_issue=p_obs)
                             ece_samples.append(calibration_error(pred_t, truth))
                     if step - issued >= int(max(horizons) * fps):
                         pending.remove(entry)
@@ -153,6 +169,7 @@ def run_eval(
                     step, pred_np,
                     (obs["agent_pos"].copy(), obs["agent_yaw"]),
                     (vis[0] < 0.5).cpu(),
+                    BaselineComparison.observation_snapshot(occ[0]),
                 ))
 
                 lead_tracker.observe(step, pred_np, obs, horizons, fps)
@@ -169,7 +186,9 @@ def run_eval(
                 optimal_path_length=max(straight_line, 1e-6),
                 collision_rate_per_step=n_collisions / steps,
             )
+            progress.update()
 
+    progress.close()
     env.close()
     summary = metrics.summary()
     summary.update(baselines.summary())
@@ -177,30 +196,23 @@ def run_eval(
     if ece_samples:
         summary["calibration_error"] = float(np.mean(ece_samples))
 
-    print("\nEval results:")
-    for k, v in summary.items():
-        print(f"  {k}: {v:.4f}")
-
-    print("\nModel vs baselines (IOU):")
-    header = f"  {'horizon':>8}  {'model':>7}  {'persist':>8}  {'empty':>7}  {'gain':>7}"
-    print(header)
-    for hi, h in enumerate(horizons):
-        label = f"{h:g}s"
-        model_v = summary.get(f"iou_{label}")
-        if model_v is None:
-            continue
-        print(f"  {label:>8}  {model_v:7.3f}  "
-              f"{summary.get(f'baseline_persistence_iou_{label}', float('nan')):8.3f}  "
-              f"{summary.get(f'baseline_empty_iou_{label}', float('nan')):7.3f}  "
-              f"{summary.get(f'model_gain_over_best_baseline_{label}', float('nan')):+7.3f}")
-    print("\n  A positive gain is the bar: it means the world model learned dynamics")
-    print("  rather than echoing what it already sees.")
-
     results_dir = pathlib.Path(cfg.eval.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
     out_path = results_dir / "eval_summary.json"
     out_path.write_text(json.dumps(summary, indent=2))
-    print(f"\nWrote {out_path}")
+
+    # Render the scored report inline rather than dumping raw key: value lines.
+    try:
+        sys.path.insert(0, str(pathlib.Path(__file__).parents[2] / "scripts"))
+        from report import render  # type: ignore
+        print("\n" + render(summary, cfg))
+    except Exception:
+        print("\nEval results:")
+        for k, v in summary.items():
+            print(f"  {k}: {v:.4f}")
+
+    print(f"  results: {out_path}")
+    print(f"  report:  python scripts/report.py --json {out_path} --markdown report.md")
     return summary
 
 
