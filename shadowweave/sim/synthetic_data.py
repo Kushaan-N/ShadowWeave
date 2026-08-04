@@ -32,6 +32,7 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 
+from ..console import Progress
 from ..shadow.bev import BEVProjector, bev_flow
 from ..shadow.raycast import ShadowRaycaster
 from ..utils import get_device, load_config, seed_everything
@@ -135,6 +136,7 @@ class SyntheticDataGenerator:
         t_start = time.time()
         total_steps = 0
         difficulties = list(self.cfg.eval.difficulty_tiers)
+        progress = Progress(n_episodes, f"  episodes[{split}]")
 
         for ep in range(n_episodes):
             seed = seed0 + ep
@@ -201,17 +203,13 @@ class SyntheticDataGenerator:
             else:
                 np.savez(path, **payload)
             total_steps += T
+            progress.update()
 
-            if (ep + 1) % 5 == 0 or ep == 0:
-                rate = total_steps / (time.time() - t_start)
-                print(
-                    f"  ep {ep+1:4d}/{n_episodes}  {rate:5.1f} steps/s  "
-                    f"difficulty={self.cfg.sim.difficulty:7s}  "
-                    f"target_pos={target.mean():.4f}  shadow={1-bev_vis.mean():.3f}",
-                    flush=True,
-                )
-
-        print(f"\nDone: {n_episodes} episodes, {total_steps} steps → {out_dir}  ({time.time()-t_start:.1f}s)")
+        progress.close()
+        elapsed = time.time() - t_start
+        print(f"\n  {n_episodes} episodes, {total_steps} steps → {out_dir}")
+        print(f"  {elapsed:.1f}s at {total_steps/max(elapsed,1e-9):.1f} steps/s  "
+              f"(last episode: target_pos={target.mean():.4f} shadow={1-bev_vis.mean():.3f})")
         self.env.close()
 
 
