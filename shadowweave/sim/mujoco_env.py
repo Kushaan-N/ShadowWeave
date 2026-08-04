@@ -80,6 +80,11 @@ _N_MOVERS = 3
 _N_DEBRIS = 6
 # Returned in place of a real frame when RGB rendering is switched off.
 _EMPTY_RGB = np.zeros((1, 1, 3), dtype=np.uint8)
+_EMPTY_RGB.flags.writeable = False  # shared sentinel; never mutate in place
+
+# Height band an obstacle must overlap to block the agent.
+_BODY_BAND_LO = 0.05
+_BODY_BAND_MARGIN = 0.4
 # Debris waits here until its scheduled release. Well above the body band, so a held
 # piece contributes nothing to occupancy until it actually starts falling.
 _DEBRIS_HOLD_Z = 6.0
@@ -166,7 +171,6 @@ class ShadowWeaveEnv:
         self._movers: list[dict] = []
         self._debris: list[dict] = []
         self._ego_grid_cache: Optional[tuple[np.ndarray, np.ndarray]] = None
-        self._active_cache: dict[int, np.ndarray] = {}
 
         if not _MUJOCO_AVAILABLE:
             print("[ShadowWeaveEnv] mujoco not installed — running in dummy mode.")
@@ -219,7 +223,6 @@ class ShadowWeaveEnv:
         self._frame = 0
         self._movers = []
         self._debris = []
-        self._active_cache = {}
         self._init_movers()
         self._init_debris()
         self._update_scripted_bodies()
@@ -495,12 +498,36 @@ class ShadowWeaveEnv:
         frame I am standing in now".
         """
         gids = self._obstacle_geoms
-        return {
+        snap = {
             "xpos": np.array([self._data.geom_xpos[g] for g in gids], dtype=np.float64),
             "xmat": np.array([self._data.geom_xmat[g] for g in gids], dtype=np.float64),
             "size": np.array([self._model.geom_size[g] for g in gids], dtype=np.float64),
             "type": np.array([self._model.geom_type[g] for g in gids], dtype=np.int32),
         }
+        # The height gate depends only on this snapshot, so compute it here rather
+        # than memoising per call site. An earlier version cached it in a dict keyed
+        # by id(snap); CPython reuses ids after garbage collection, so a transient
+        # snapshot could receive a previous one's gate and silently produce the wrong
+        # ground truth (reproduced: three different snapshots shared one id).
+        snap["active"] = self._height_gate(snap)
+        return snap
+
+    def _height_gate(self, snap: dict[str, np.ndarray]) -> np.ndarray:
+        """Indices of geoms overlapping the body height band.
+
+        This is what lets falling debris enter the target as it descends, and it
+        usually rules out most geoms before any rasterisation happens.
+        """
+        n = len(snap["type"])
+        if n == 0:
+            return np.empty(0, dtype=np.int64)
+        z_lo, z_hi = _BODY_BAND_LO, float(self.cfg.sim.camera_height) + _BODY_BAND_MARGIN
+        half_z = np.array(
+            [self._geom_half_height(int(snap["type"][i]), snap["size"][i]) for i in range(n)],
+            dtype=np.float64,
+        )
+        z = snap["xpos"][:, 2]
+        return np.nonzero((z + half_z >= z_lo) & (z - half_z <= z_hi))[0]
 
     def bev_occupancy(
         self,
@@ -526,12 +553,10 @@ class ShadowWeaveEnv:
 
         wx, wy = self._bev_grid_world(pos, yaw)
         occ = np.zeros(wx.shape, dtype=np.float32)
-        z_lo, z_hi = 0.05, float(self.cfg.sim.camera_height) + 0.4
 
-        # Height gate, vectorised over geoms: a geom only blocks the agent while it
-        # overlaps the body band. This is what lets falling debris enter the target
-        # over time, and it usually rules out most geoms before any rasterisation.
-        active = self._active_geoms(snap, z_lo, z_hi)
+        active = snap.get("active")
+        if active is None:  # snapshot built before the gate existed
+            active = self._height_gate(snap)
         for i in active:
             occ = np.maximum(
                 occ,
@@ -539,27 +564,6 @@ class ShadowWeaveEnv:
                                 snap["size"][i], wx, wy),
             )
         return occ
-
-    def _active_geoms(self, snap: dict[str, np.ndarray], z_lo: float, z_hi: float) -> np.ndarray:
-        n = len(snap["type"])
-        if n == 0:
-            return np.empty(0, dtype=int)
-        key = id(snap)
-        cached = self._active_cache.get(key)
-        if cached is not None:
-            return cached
-        sizes, types = snap["size"], snap["type"]
-        half_z = np.empty(n, dtype=np.float64)
-        for i in range(n):
-            half_z[i] = self._geom_half_height(int(types[i]), sizes[i])
-        z = snap["xpos"][:, 2]
-        active = np.nonzero((z + half_z >= z_lo) & (z - half_z <= z_hi))[0]
-        # Data generation renders the same snapshot into many timesteps' targets, so
-        # the gate is worth memoising. Bounded so long rollouts cannot grow it freely.
-        if len(self._active_cache) > 512:
-            self._active_cache.clear()
-        self._active_cache[key] = active
-        return active
 
     def _geom_half_height(self, gtype: int, size: np.ndarray) -> float:
         if gtype == mujoco.mjtGeom.mjGEOM_BOX:
@@ -607,7 +611,8 @@ class ShadowWeaveEnv:
         """Distance in metres from ``pos`` to the nearest obstacle surface."""
         if not self._obstacle_geoms:
             return float("inf")
-        z_lo, z_hi = 0.05, float(self.cfg.sim.camera_height) + 0.4
+        z_lo = _BODY_BAND_LO
+        z_hi = float(self.cfg.sim.camera_height) + _BODY_BAND_MARGIN
         best = float("inf")
         for gid in self._obstacle_geoms:
             gp = self._data.geom_xpos[gid]
