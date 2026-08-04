@@ -30,6 +30,7 @@ from torch.utils.data.distributed import DistributedSampler
 from ..eval.metrics import iou
 from ..utils import (
     count_parameters,
+    unwrap_model,
     get_device,
     load_checkpoint,
     load_config,
@@ -179,13 +180,13 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     pos_weight = torch.tensor(cfg.world_model.pos_weight, device=device)
 
-    raw = model.module if world_size > 1 else model
+    raw = unwrap_model(model)
     ema = EMA(raw, cfg.world_model.ema_decay) if cfg.world_model.ema else None
 
     start_epoch, best_val, best_iou, bad_epochs, global_step = 0, float("inf"), 0.0, 0, 0
     if resume and pathlib.Path(resume).exists():
         state = load_checkpoint(resume, map_location=device)
-        (model.module if world_size > 1 else model).load_state_dict(state["model"])
+        unwrap_model(model).load_state_dict(state["model"])
         if "optimizer" in state:
             opt.load_state_dict(state["optimizer"])
         if "scaler" in state and use_amp:
@@ -290,7 +291,7 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
                 wandb.log({"train_loss": train_loss, "val_loss": val_loss,
                            "epoch": epoch, "lr": _lr_at(global_step, cfg, total_steps), **iou_log})
 
-            raw_model = model.module if world_size > 1 else model
+            raw_model = unwrap_model(model)
             metrics = {"val_loss": val_loss, "train_loss": train_loss, **iou_log}
             extra = {"ema": ema.state_dict()} if ema is not None else None
             save_checkpoint(ckpt_dir / "last.pt", raw_model, cfg, epoch=epoch,
@@ -320,7 +321,7 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
             break
 
     if is_main:
-        raw_model = model.module if world_size > 1 else model
+        raw_model = unwrap_model(model)
         if ema is not None:
             ema.copy_to(raw_model)  # ship the averaged weights
         save_checkpoint(ckpt_dir / "final.pt", raw_model, cfg, epoch=cfg.world_model.epochs - 1,
