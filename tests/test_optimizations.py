@@ -74,8 +74,8 @@ class TestBaselines:
         bc = BaselineComparison([1, 3])
         truth = torch.zeros(1, 16, 16)
         truth[0, 4:8, 4:8] = 1.0
-        bc.set_observation(truth.clone())          # nothing moved
-        bc.log(0, np.zeros((16, 16), np.float32), truth)
+        bc.log(0, np.zeros((16, 16), np.float32), truth,
+               observed_at_issue=truth.clone())    # nothing moved
         s = bc.summary()
         assert s["baseline_persistence_iou_1s"] > s["baseline_empty_iou_1s"]
 
@@ -83,18 +83,18 @@ class TestBaselines:
         bc = BaselineComparison([1])
         truth = torch.zeros(1, 16, 16)
         truth[0, 4:8, 4:8] = 1.0
-        bc.set_observation(truth.clone())
-        bc.log(0, np.zeros((16, 16), np.float32), truth)   # model predicts nothing
+        # Model predicts nothing while the scene was already static.
+        bc.log(0, np.zeros((16, 16), np.float32), truth, observed_at_issue=truth.clone())
         assert bc.summary()["model_gain_over_best_baseline_1s"] < 0
 
     def test_gain_is_positive_when_model_wins(self):
         bc = BaselineComparison([1])
         truth = torch.zeros(1, 16, 16)
         truth[0, 4:8, 4:8] = 1.0
-        bc.set_observation(torch.zeros(1, 16, 16))         # observation is stale
         model = np.zeros((16, 16), np.float32)
         model[4:8, 4:8] = 1.0
-        bc.log(0, model, truth)
+        # The object arrived after the prediction was issued, so persistence misses it.
+        bc.log(0, model, truth, observed_at_issue=torch.zeros(1, 16, 16))
         assert bc.summary()["model_gain_over_best_baseline_1s"] > 0
 
 
