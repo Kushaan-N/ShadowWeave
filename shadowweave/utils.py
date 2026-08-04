@@ -118,6 +118,23 @@ def count_parameters(model: torch.nn.Module) -> int:
     return sum(p.numel() for p in model.parameters() if p.requires_grad)
 
 
+def unwrap_model(model: torch.nn.Module) -> torch.nn.Module:
+    """Strip DistributedDataParallel and torch.compile wrappers.
+
+    torch.compile returns an OptimizedModule whose state_dict keys are prefixed with
+    ``_orig_mod.``. Saving that produces a checkpoint no plain model can load, and it
+    also breaks EMA key matching — so every save/EMA path must unwrap first.
+    """
+    seen = 0
+    while seen < 4:  # DDP(compile(model)) is two layers; the bound is a safety net
+        inner = getattr(model, "module", None) or getattr(model, "_orig_mod", None)
+        if inner is None:
+            break
+        model = inner
+        seen += 1
+    return model
+
+
 def setup_headless_rendering() -> str:
     """Pick a MuJoCo GL backend that works without an X server.
 
