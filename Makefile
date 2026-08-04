@@ -1,4 +1,4 @@
-.PHONY: help setup test smoke bench data train rl eval dashboard preflight demos clean clean-data
+.PHONY: help setup test smoke bench data train rl eval report viz dashboard preflight demos clean clean-data
 
 PYTHON ?= python
 EPISODES ?= 400
@@ -16,6 +16,8 @@ help:
 	@echo "  make train       train the world model"
 	@echo "  make rl          train the local agent with PPO"
 	@echo "  make eval        run the evaluation harness"
+	@echo "  make report      render the latest eval results as a scored table"
+	@echo "  make viz         render BEV prediction figures from a checkpoint"
 	@echo "  make dashboard   launch the live Gradio dashboard"
 	@echo "  make clean       remove caches and build artefacts"
 	@echo "  make clean-data  remove generated rollouts and memmap caches"
@@ -30,7 +32,7 @@ smoke:
 	$(PYTHON) scripts/pipeline_test.py --frames 10
 
 bench:
-	$(PYTHON) scripts/benchmark.py --data $(shell $(PYTHON) -c "print('data/rollouts')")
+	$(PYTHON) scripts/benchmark.py --data data/rollouts
 
 preflight:
 	$(PYTHON) slurm/preflight.py
@@ -57,6 +59,12 @@ rl:
 
 eval:
 	$(PYTHON) -m shadowweave.eval.run_eval
+
+report:
+	$(PYTHON) scripts/report.py --markdown results/report.md
+
+viz:
+	$(PYTHON) scripts/visualize.py
 
 dashboard:
 	$(PYTHON) -m shadowweave.dashboard.app --live
