@@ -35,11 +35,20 @@ class BaselineComparison:
         self._scores: dict[tuple[str, int], list[float]] = defaultdict(list)
         self._shadow: dict[tuple[str, int], list[float]] = defaultdict(list)
         self._model: dict[int, list[float]] = defaultdict(list)
-        self._observed: torch.Tensor | None = None
 
-    def set_observation(self, occupancy: torch.Tensor) -> None:
-        """Record the currently observed BEV, used by the persistence baseline."""
-        self._observed = occupancy.detach().float().cpu().reshape(1, *occupancy.shape[-2:])
+    @staticmethod
+    def observation_snapshot(occupancy: torch.Tensor) -> torch.Tensor:
+        """Freeze the observed BEV so it can be scored later.
+
+        Persistence must be the observation from when the prediction was ISSUED,
+        because that is the frame the ground truth is rendered in. Using the
+        observation available at due-time compares an ego-BEV in the pose at t+h
+        against a truth in the pose at t — the same frame mismatch that broke the
+        main eval path, which made the baseline artificially *weak* and so flattered
+        the model. Measured effect of the fix: persistence IOU 0.109 -> 0.146, i.e. a
+        harder and more honest bar.
+        """
+        return occupancy.detach().float().cpu().reshape(1, *occupancy.shape[-2:]).clone()
 
     def log(
         self,
@@ -47,13 +56,14 @@ class BaselineComparison:
         model_pred: np.ndarray,
         truth: torch.Tensor,
         shadow_mask: torch.Tensor | None = None,
+        observed_at_issue: torch.Tensor | None = None,
     ) -> None:
         pred_t = torch.from_numpy(np.asarray(model_pred)).unsqueeze(0)
         self._model[horizon_idx].append(float(iou(pred_t, truth)))
 
         candidates: dict[str, torch.Tensor] = {"empty": torch.zeros_like(truth)}
-        if self._observed is not None:
-            candidates["persistence"] = self._observed
+        if observed_at_issue is not None:
+            candidates["persistence"] = observed_at_issue
 
         for name, pred in candidates.items():
             self._scores[(name, horizon_idx)].append(float(iou(pred, truth)))
@@ -114,18 +124,20 @@ class LeadTimeTracker:
     ) -> None:
         """Feed one frame: the model's prediction stack and the current GT occupancy."""
         current = np.asarray(obs["bev_occupancy"]) > 0.5
-        self._pending.append((step, np.asarray(pred), current))
-
         max_frames = int(max(horizons) * fps)
-        for issued, probs, past_occ in list(self._pending):
-            if issued == step:
-                continue
+
+        # Rebuilt rather than mutated with list.remove: removing a tuple that holds
+        # numpy arrays only works because CPython's comparison has an identity fast
+        # path, and an equal-but-not-identical tuple raises "truth value of an array
+        # is ambiguous". Filtering sidesteps that entirely.
+        keep: list[tuple[int, np.ndarray, np.ndarray]] = []
+        for issued, probs, past_occ in self._pending:
             elapsed = step - issued
             # Cells that were free when the prediction was made and are occupied now.
             arrived = current & ~past_occ
             if arrived.sum() < self.min_new_cells:
-                if elapsed >= max_frames:
-                    self._pending.remove((issued, probs, past_occ))
+                if elapsed < max_frames:
+                    keep.append((issued, probs, past_occ))
                 continue
 
             # Did any horizon at or beyond this delay already flag those cells?
@@ -147,10 +159,9 @@ class LeadTimeTracker:
                 self.lead_times.append(float(flagged))
             else:
                 self.missed += 1
-            self._pending.remove((issued, probs, past_occ))
 
-        while self._pending and step - self._pending[0][0] > max_frames:
-            self._pending.pop(0)
+        self._pending = keep
+        self._pending.append((step, np.asarray(pred), current))
 
     def summary(self) -> dict[str, float]:
         if not self.lead_times and not self.missed:
@@ -181,8 +192,9 @@ def calibration_error(probs: torch.Tensor, truth: torch.Tensor, n_bins: int = 10
     accurate one here, and IOU alone cannot see that.
     """
     p = probs.detach().flatten().float()
-    t = (truth.detach().flatten() > 0.5).float()
-    edges = torch.linspace(0, 1, n_bins + 1)
+    t = (truth.detach().flatten() > 0.5).float().to(p.device)
+    # Built on p's device: a CPU edge tensor compared against a CUDA p raises.
+    edges = torch.linspace(0, 1, n_bins + 1, device=p.device)
     ece = 0.0
     n = p.numel()
     for i in range(n_bins):
@@ -202,10 +214,14 @@ if __name__ == "__main__":
     rng = np.random.default_rng(0)
     for _ in range(40):
         truth = (torch.rand(1, 32, 32) > 0.92).float()
-        bc.set_observation(truth * (torch.rand(1, 32, 32) > 0.3).float())
+        # What was visible when the prediction was issued — a partial, stale view.
+        observed = BaselineComparison.observation_snapshot(
+            truth * (torch.rand(1, 32, 32) > 0.3).float()
+        )
         for hi in range(len(horizons)):
             model = (truth * 0.9 + torch.rand(1, 32, 32) * 0.2).clamp(0, 1)[0].numpy()
-            bc.log(hi, model, truth, shadow_mask=torch.rand(1, 32, 32) > 0.5)
+            bc.log(hi, model, truth, shadow_mask=torch.rand(1, 32, 32) > 0.5,
+                   observed_at_issue=observed)
     for k, v in bc.summary().items():
         print(f"  {k}: {v:+.4f}")
 
