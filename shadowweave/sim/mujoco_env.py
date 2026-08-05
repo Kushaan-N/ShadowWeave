@@ -506,6 +506,35 @@ class ShadowWeaveEnv:
         rx, ry = math.cos(yaw), math.sin(yaw)
         return pos[0] + zz * fx + xx * rx, pos[1] + zz * fy + xx * ry
 
+    def describe_scene(self) -> list[dict[str, Any]]:
+        """Full geometry of the current scene, including the room shell.
+
+        ``geom_snapshot`` deliberately carries only obstacles, packed as arrays, and
+        sits on the hot path that renders prediction targets. Scene export needs
+        everything — floor, walls, names, colours — so it gets its own accessor
+        rather than widening that one.
+        """
+        if not _MUJOCO_AVAILABLE:
+            return []
+        out: list[dict[str, Any]] = []
+        for gid in range(self._model.ngeom):
+            name = mujoco.mj_id2name(self._model, mujoco.mjtObj.mjOBJ_GEOM, gid)
+            if not name:
+                body = mujoco.mj_id2name(
+                    self._model, mujoco.mjtObj.mjOBJ_BODY, self._model.geom_bodyid[gid]
+                )
+                name = f"{body}_geom" if body else f"geom_{gid}"
+            out.append({
+                "name": name,
+                "type": int(self._model.geom_type[gid]),
+                "pos": np.array(self._data.geom_xpos[gid], dtype=np.float64),
+                "mat": np.array(self._data.geom_xmat[gid], dtype=np.float64).reshape(3, 3),
+                "size": np.array(self._model.geom_size[gid], dtype=np.float64),
+                "rgba": np.array(self._model.geom_rgba[gid], dtype=np.float64),
+                "dynamic": bool(self._model.body_dofnum[self._model.geom_bodyid[gid]] > 0),
+            })
+        return out
+
     def geom_snapshot(self) -> dict[str, np.ndarray]:
         """Freeze obstacle geometry for this instant.
 
