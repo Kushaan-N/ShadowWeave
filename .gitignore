@@ -33,7 +33,7 @@ slurm/logs/*
 slurm/env.local.sh
 
 # Experiment outputs
-results/
+results*/
 wandb/
 runs/
 *.sif
