@@ -26,7 +26,7 @@ import numpy as np  # noqa: E402
 import torch  # noqa: E402
 
 from shadowweave.utils import count_parameters, get_device, load_config  # noqa: E402
-from shadowweave.world_model.diffusion import build_world_model  # noqa: E402
+from shadowweave.world_model import build_world_model  # noqa: E402
 
 
 def _sync(device: torch.device) -> None:
