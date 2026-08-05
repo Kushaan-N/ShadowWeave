@@ -59,18 +59,29 @@ class CueMapper:
     ) -> np.ndarray:
         u = np.asarray(uncertainty_grid, dtype=np.float32).ravel()
         falling = np.asarray(falling_mask, dtype=bool).ravel()
+        if u.size != N_ZONES or falling.size != N_ZONES:
+            raise ValueError(
+                f"expected {N_ZONES}-zone inputs, got uncertainty {u.size} / falling {falling.size}"
+            )
+        # A non-finite uncertainty means the upstream model broke, not that the path
+        # is clear — silence here would read as "safe" to a blind user. Fail loud.
+        u = np.where(np.isfinite(u), np.clip(u, 0.0, 1.0), 1.0)
         params = np.zeros((N_ZONES, 3), dtype=np.float32)
         params[:, 0] = np.arange(N_ZONES, dtype=np.float32)
 
         if is_stop:
-            params[:, 1] = 1.0
-            params[:, 2] = _STOP_FREQ_RATIO - 1.0  # pitch field is an additive offset
+            # Nine coherent same-phase tones sum linearly; full intensity on all of
+            # them clips 76% of samples into a square wave. 1/N keeps the summed
+            # peak at the level of one full-intensity zone.
+            params[:, 1] = 1.0 / N_ZONES
+            params[:, 2] = _STOP_FREQ_RATIO - 0.5  # decoded as ratio = pitch + 0.5
             return params.ravel()
 
-        # Falling objects are the highest-priority cue and always keep a slot; the
-        # remaining slots go to the most uncertain zones.
+        # Falling objects are the highest-priority cue and always keep a slot even
+        # below the ambient-hum threshold; the remaining slots go to the most
+        # uncertain zones.
         priority = u + falling.astype(np.float32) * 10.0
-        audible = np.where(u >= self.threshold)[0]
+        audible = np.where((u >= self.threshold) | falling)[0]
         if audible.size > self.max_cues:
             audible = audible[np.argsort(-priority[audible])[: self.max_cues]]
         audible_set = set(int(i) for i in audible)
@@ -85,6 +96,9 @@ class CueMapper:
                 u[i], self.cfg.audio.min_intensity, self.cfg.audio.max_intensity
             )
             if falling[i]:
+                # A falling hazard the model sees clearly has LOW uncertainty — its
+                # warning must not inherit that near-zero loudness.
+                params[i, 1] = max(params[i, 1], float(self.cfg.audio.falling_min_intensity))
                 # Descending Doppler sweep, one phase per zone so two simultaneous
                 # falling objects do not share and corrupt each other's sweep.
                 self._sweep_phase[i] = (self._sweep_phase[i] + step) % 1.0
@@ -126,6 +140,15 @@ if __name__ == "__main__":
     assert silent[1::3].sum() == 0.0
 
     stop = mapper.map(uncertainty, falling, is_stop=True)
-    print(f"  stop override → all 9 zones at intensity {stop[1::3].min():.2f}")
-    assert (stop[1::3] == 1.0).all()
+    print(f"  stop override → all 9 zones at intensity {stop[1::3].min():.3f}")
+    assert (stop[1::3] > 0).all(), "stop pattern must sound in every zone"
+    assert stop[1::3].sum() <= 1.0 + 1e-6, "coherent stop tones must not clip when summed"
+
+    quiet_falling = mapper.map(np.zeros(9, dtype=np.float32), falling)
+    print(f"  falling in a zero-uncertainty zone → int={quiet_falling[4*3+1]:.2f}")
+    assert quiet_falling[4 * 3 + 1] >= cfg.audio.falling_min_intensity
+
+    nan_grid = mapper.map(np.full(9, np.nan, dtype=np.float32), np.zeros(9, dtype=bool))
+    print(f"  all-NaN grid → max intensity {nan_grid[1::3].max():.2f}  (broken sensor must not sound safe)")
+    assert nan_grid[1::3].max() > 0
     print("CueMapper OK")
