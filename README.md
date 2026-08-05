@@ -12,6 +12,9 @@ be* in the space they cannot observe.
 This is deliberately **not** SLAM and not object detection + avoidance. The novel claim
 is uncertainty propagation through unobserved space.
 
+> **Running this on a GPU cluster?** Read [`HANDOFF.md`](HANDOFF.md) first —
+> setup, the exact job order, storage requirements, and the traps that cost hours.
+
 ---
 
 ## Quick start
