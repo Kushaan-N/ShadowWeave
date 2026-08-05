@@ -15,6 +15,19 @@ echo "Submitting ShadowWeave pipeline"
 
 DEP=""
 if [[ "${SW_SKIP_DATA:-0}" != "1" ]]; then
+  # Regeneration must REPLACE old data: fresh episodes are named ep{seed:06d},
+  # so stale files under other names (e.g. the pre-BEV 5-digit ones) survive a
+  # rerun, and the dataset loader crashes on the first one it globs. The
+  # .memmap sidecar cache must go with them — its markers are keyed on
+  # filename only and would keep serving the old arrays.
+  DATA_ROOT="${SW_DATA_ROOT:-data/rollouts}"
+  for split in train val; do
+    if [[ -d "${DATA_ROOT}/${split}" ]]; then
+      echo "  clearing ${DATA_ROOT}/${split} before regeneration"
+      rm -rf "${DATA_ROOT}/${split}"
+    fi
+  done
+
   TRAIN_DATA=$(sbatch --parsable slurm/gen_data.sbatch)
   echo "  gen_data (train) : ${TRAIN_DATA}"
 
