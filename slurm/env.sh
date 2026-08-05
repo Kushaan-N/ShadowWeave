@@ -7,35 +7,58 @@
 
 set -euo pipefail
 
-# ── Conda ───────────────────────────────────────────────────────────────
+# ── Python environment: venv or conda ───────────────────────────────────
+# venv wins if SW_VENV is set or a .venv exists in the repo. Both work; venv is
+# often the better fit on HPC, where a Python module is already provided and pip
+# wheels ship their own CUDA runtime. Conda is only genuinely needed if you want
+# its mesalib for the osmesa software-rendering fallback — EGL on an NVIDIA node
+# comes from the driver, not from the environment.
 SW_ENV="${SW_ENV:-shadowweave}"
+SW_VENV="${SW_VENV:-}"
 SW_CONDA_BASE="${SW_CONDA_BASE:-}"
-
-if [[ -z "${SW_CONDA_BASE}" ]]; then
-  if command -v conda &>/dev/null; then
-    SW_CONDA_BASE="$(conda info --base)"
-  else
-    for guess in "$HOME/miniconda3" "$HOME/anaconda3" /opt/conda /opt/homebrew/anaconda3; do
-      [[ -d "$guess" ]] && SW_CONDA_BASE="$guess" && break
-    done
-  fi
-fi
-
-if [[ -z "${SW_CONDA_BASE}" || ! -f "${SW_CONDA_BASE}/etc/profile.d/conda.sh" ]]; then
-  echo "ERROR: could not locate conda. Set SW_CONDA_BASE=/path/to/conda" >&2
-  exit 1
-fi
+SW_PYTHON_MODULE="${SW_PYTHON_MODULE:-}"
 
 # ── Modules (optional; harmless when there is no module system) ─────────
 SW_CUDA_MODULE="${SW_CUDA_MODULE:-cuda/12.4}"
-if command -v module &>/dev/null && [[ -n "${SW_CUDA_MODULE}" ]]; then
-  module load "${SW_CUDA_MODULE}" 2>/dev/null || \
-    echo "note: module '${SW_CUDA_MODULE}' unavailable, relying on the conda CUDA runtime"
+if command -v module &>/dev/null; then
+  [[ -n "${SW_PYTHON_MODULE}" ]] && { module load "${SW_PYTHON_MODULE}" 2>/dev/null || \
+    echo "note: module '${SW_PYTHON_MODULE}' unavailable"; }
+  [[ -n "${SW_CUDA_MODULE}" ]] && { module load "${SW_CUDA_MODULE}" 2>/dev/null || \
+    echo "note: module '${SW_CUDA_MODULE}' unavailable, relying on the wheel's CUDA runtime"; }
 fi
 
-# shellcheck disable=SC1091
-source "${SW_CONDA_BASE}/etc/profile.d/conda.sh"
-conda activate "${SW_ENV}"
+_SW_REPO="${SLURM_SUBMIT_DIR:-$PWD}"
+[[ -z "${SW_VENV}" && -f "${_SW_REPO}/.venv/bin/activate" ]] && SW_VENV="${_SW_REPO}/.venv"
+
+if [[ -n "${SW_VENV}" ]]; then
+  if [[ ! -f "${SW_VENV}/bin/activate" ]]; then
+    echo "ERROR: no venv at ${SW_VENV} — create one with ./scripts/setup_venv.sh" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC1091
+  source "${SW_VENV}/bin/activate"
+  SW_ENV_KIND="venv:${SW_VENV}"
+else
+  if [[ -z "${SW_CONDA_BASE}" ]]; then
+    if command -v conda &>/dev/null; then
+      SW_CONDA_BASE="$(conda info --base)"
+    else
+      for guess in "$HOME/miniconda3" "$HOME/anaconda3" "$HOME/miniforge3" /opt/conda; do
+        [[ -d "$guess" ]] && SW_CONDA_BASE="$guess" && break
+      done
+    fi
+  fi
+  if [[ -z "${SW_CONDA_BASE}" || ! -f "${SW_CONDA_BASE}/etc/profile.d/conda.sh" ]]; then
+    echo "ERROR: no venv found and could not locate conda." >&2
+    echo "  Either: ./scripts/setup_venv.sh   (then re-submit)" >&2
+    echo "  Or:     export SW_CONDA_BASE=/path/to/conda" >&2
+    exit 1
+  fi
+  # shellcheck disable=SC1091
+  source "${SW_CONDA_BASE}/etc/profile.d/conda.sh"
+  conda activate "${SW_ENV}"
+  SW_ENV_KIND="conda:${SW_ENV}"
+fi
 
 # ── Headless rendering ──────────────────────────────────────────────────
 # Compute nodes have no X display, so MuJoCo must render off-screen. EGL uses the
@@ -64,7 +87,7 @@ export PYTHONPATH="${SW_ROOT}:${PYTHONPATH:-}"
 echo "─────────────────────────────────────────────"
 echo " job        : ${SLURM_JOB_NAME:-interactive} (${SLURM_JOB_ID:-none})"
 echo " node       : $(hostname)"
-echo " conda env  : ${SW_ENV}"
+echo " python env : ${SW_ENV_KIND}"
 echo " python     : $(which python)"
 echo " MUJOCO_GL  : ${MUJOCO_GL}"
 echo " root       : ${SW_ROOT}"
