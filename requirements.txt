@@ -1,3 +1,6 @@
+# For a GPU cluster prefer environment.yml (conda), which pins the CUDA runtime.
+# This file covers pip-only installs and local/macOS development.
+
 # Core ML
 torch>=2.0.0
 torchvision>=0.15.0
@@ -30,8 +33,11 @@ gradio>=4.0.0
 omegaconf>=2.3.0
 hydra-core>=1.3.0
 wandb>=0.16.0
+tensorboard>=2.15.0
+tqdm>=4.66.0
 
-# Inference optimization (macOS: no GPU onnxruntime)
+# Inference optimization
+# onnxruntime-gpu on CUDA nodes; plain onnxruntime elsewhere
 onnx>=1.15.0
 onnxruntime>=1.17.0
 

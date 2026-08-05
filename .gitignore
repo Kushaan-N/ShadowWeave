@@ -23,3 +23,14 @@ MUJOCO_LOG.TXT
 
 # OS
 .DS_Store
+
+# SLURM
+slurm/logs/*
+!slurm/logs/.gitkeep
+slurm/env.local.sh
+
+# Experiment outputs
+results/
+wandb/
+runs/
+*.sif

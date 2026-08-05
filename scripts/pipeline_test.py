@@ -1,130 +1,155 @@
 """End-to-end pipeline smoke test.
 
-Runs 30 frames through: MuJoCo → GeometricOccupancyField → ShadowRaycaster → CueMapper
-Prints per-zone uncertainty as an ASCII bar chart each frame.
+Runs MuJoCo → BEVProjector → ShadowRaycaster → Orchestrator → CueMapper → HRTFEngine
+and prints per-zone uncertainty as an ASCII bar chart, plus a latency budget.
 No trained models required.
 
+The previous version synthesised depth from the ground-truth occupancy grid because
+MuJoCo depth rendering was assumed broken; the env now returns real metric depth (and
+falls back to mj_ray rather than to a fabricated map), so this measures the real path.
+
 Usage:
-    /opt/homebrew/anaconda3/envs/shadowweave/bin/python scripts/pipeline_test.py
+    python scripts/pipeline_test.py
+    python scripts/pipeline_test.py --frames 30 --difficulty debris
 """
 
 from __future__ import annotations
 
+import argparse
 import pathlib
 import sys
 import time
 
 import numpy as np
 import torch
-from omegaconf import OmegaConf
 
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
 
-from shadowweave.sim.mujoco_env import ShadowWeaveEnv
-from shadowweave.shadow.raycast import ShadowRaycaster
-from shadowweave.audio.cues import CueMapper
+from shadowweave.agents.global_agent import GlobalAgent  # noqa: E402
+from shadowweave.agents.local_agent import LocalAgent  # noqa: E402
+from shadowweave.agents.orchestrator import Orchestrator  # noqa: E402
+from shadowweave.audio.hrtf import HRTFEngine  # noqa: E402
+from shadowweave.shadow.bev import BEVProjector, bev_flow  # noqa: E402
+from shadowweave.shadow.raycast import ShadowRaycaster  # noqa: E402
+from shadowweave.sim.mujoco_env import ShadowWeaveEnv  # noqa: E402
+from shadowweave.utils import get_device, load_config  # noqa: E402
 
 ZONE_LABELS = ["L-far", "L    ", "L-near", "FL   ", "F    ", "FR   ", "R-near", "R    ", "R-far"]
 BAR_WIDTH = 30
 
 
-def render_frame(frame_idx: int, uncertainty: np.ndarray, is_stop: bool) -> None:
-    print(f"\n─── Frame {frame_idx:03d} {'[STOP]' if is_stop else '      '} ──────────────────────────")
+def render_frame(idx: int, uncertainty: np.ndarray, is_stop: bool, shadow_frac: float) -> None:
+    tag = "\033[91m[STOP]\033[0m" if is_stop else "      "
+    print(f"\n─── Frame {idx:03d} {tag}  shadow={shadow_frac:.2f} ──────────────────")
     for label, u in zip(ZONE_LABELS, uncertainty):
         filled = int(u * BAR_WIDTH)
         colour = "\033[91m" if u > 0.7 else ("\033[93m" if u > 0.4 else "\033[92m")
-        reset  = "\033[0m"
-        bar = colour + "█" * filled + reset + "░" * (BAR_WIDTH - filled)
+        bar = colour + "█" * filled + "\033[0m" + "░" * (BAR_WIDTH - filled)
         print(f"  {label}: {bar} {u:.3f}")
 
 
-def occupancy_to_depth(occupancy: np.ndarray) -> np.ndarray:
-    """Derive a synthetic depth map from the GT occupancy grid.
-
-    For each pixel column, the depth = (row of nearest obstacle from top) / H.
-    Free columns get depth = 1.0 (open space, far away).
-    This gives raycaster.forward_from_depth() a meaningful signal without MuJoCo depth rendering.
-    """
-    H, W = occupancy.shape
-    depth = np.ones((H, W), dtype=np.float32)
-    for c in range(W):
-        col = occupancy[:, c]
-        hits = np.where(col > 0.5)[0]
-        if hits.size > 0:
-            nearest_row = hits[0]
-            # assign depth proportional to row index: top row → near, bottom → far
-            frac = nearest_row / H
-            depth[:, c] = frac
-    return depth
-
-
 def main() -> None:
-    cfg_path = pathlib.Path(__file__).parents[1] / "shadowweave" / "configs" / "default.yaml"
-    cfg = OmegaConf.load(cfg_path)
+    ap = argparse.ArgumentParser(description="ShadowWeave pipeline smoke test")
+    ap.add_argument("--frames", type=int, default=10)
+    ap.add_argument("--difficulty", type=str, default=None,
+                    choices=["static", "moving", "debris"])
+    ap.add_argument("--quiet", action="store_true", help="latency summary only")
+    ap.add_argument("--overrides", nargs="*", default=[])
+    args = ap.parse_args()
 
-    device = "mps" if torch.backends.mps.is_available() else ("cuda" if torch.cuda.is_available() else "cpu")
+    cfg = load_config(overrides=args.overrides)
+    device = get_device()
     print(f"Pipeline test — device: {device}")
-    print("Note: MuJoCo depth rendering is broken on macOS (ARB_clip_control missing).")
-    print("      Using GT-occupancy→synthetic-depth as the depth source.\n")
 
-    env       = ShadowWeaveEnv(cfg)
-    raycaster = ShadowRaycaster(cfg).to(device)
-    cue_mapper = CueMapper(cfg)
+    env = ShadowWeaveEnv(cfg)
+    projector = BEVProjector(cfg).to(device).eval()
+    raycaster = ShadowRaycaster(cfg).to(device).eval()
+    orch = Orchestrator(cfg, LocalAgent(cfg).to(device).eval(), GlobalAgent(cfg))
+    hrtf = HRTFEngine(cfg)
+    hrtf.load_hrtfs()
 
-    # Run all three difficulty tiers for 10 frames each
-    latencies: list[float] = []
+    S = cfg.bev.size
+    T = len(cfg.world_model.prediction_horizons)
+    tiers = [args.difficulty] if args.difficulty else list(cfg.eval.difficulty_tiers)
 
-    for difficulty in ["static", "moving", "debris"]:
+    stage_ms: dict[str, list[float]] = {k: [] for k in
+                                        ["sim", "bev", "shadow", "orchestrator", "audio", "total"]}
+    n_stop = 0
+
+    for difficulty in tiers:
         cfg.sim.difficulty = difficulty
-        print(f"\n{'═'*50}")
-        print(f"  Difficulty: {difficulty.upper()}")
-        print(f"{'═'*50}")
-        env.reset(seed=42)
+        print(f"\n{'═' * 52}\n  Difficulty: {difficulty.upper()}\n{'═' * 52}")
+        obs = env.reset(seed=42)
+        prev_bev = None
 
-        for frame_idx in range(10):
+        for frame_idx in range(args.frames):
+            t_start = time.perf_counter()
+
             t0 = time.perf_counter()
+            depth_t = torch.from_numpy(obs["depth"]).unsqueeze(0).unsqueeze(0).to(device)
+            stage_ms["sim"].append((time.perf_counter() - t0) * 1000)
 
-            obs = env.step()
-            # Synthesise depth from GT occupancy (stand-in for Depth Anything V2)
-            depth_np = occupancy_to_depth(obs["occupancy"])
-
-            # depth → shadow → uncertainty
-            depth_t = torch.from_numpy(depth_np).unsqueeze(0).unsqueeze(0).to(device)
+            t0 = time.perf_counter()
             with torch.no_grad():
-                grid = raycaster.forward_from_depth(depth_t)
-            uncertainty = grid[0].cpu().numpy()
+                occ, vis = projector(depth_t)
+                flow = (bev_flow(prev_bev, occ) if prev_bev is not None
+                        else torch.zeros(1, 2, S, S, device=device))
+                prev_bev = occ
+            stage_ms["bev"].append((time.perf_counter() - t0) * 1000)
 
-            # uncertainty → audio cues
-            falling_mask = np.zeros(9, dtype=bool)
-            # simple heuristic: zone is "falling" if vertical velocity is large
-            vel = obs["velocity"]
-            if vel.shape[0] > 0:
-                max_downward = vel[:, 2].min()   # most negative z = fastest falling
-                if max_downward < -0.5:
-                    # flag the zone with highest uncertainty as the falling zone
-                    falling_mask[int(uncertainty.argmax())] = True
+            t0 = time.perf_counter()
+            with torch.no_grad():
+                uncertainty = raycaster.forward_from_depth(depth_t)[0].cpu().numpy()
+            stage_ms["shadow"].append((time.perf_counter() - t0) * 1000)
 
-            is_stop  = bool(uncertainty.max() > cfg.agents.orchestrator.uncertainty_stop_threshold)
-            audio_params = cue_mapper.map(uncertainty, falling_mask, is_stop)
+            t0 = time.perf_counter()
+            # No trained world model in a smoke test; zeros keep the contract honest.
+            out = orch.step(uncertainty, np.zeros((T, S, S), dtype=np.float32))
+            stage_ms["orchestrator"].append((time.perf_counter() - t0) * 1000)
 
-            latency_ms = (time.perf_counter() - t0) * 1000
-            latencies.append(latency_ms)
+            t0 = time.perf_counter()
+            buf = hrtf._synthesise(out.audio_params.reshape(9, 3))
+            stage_ms["audio"].append((time.perf_counter() - t0) * 1000)
 
-            render_frame(frame_idx, uncertainty, is_stop)
-            print(f"  latency: {latency_ms:.1f} ms  |  depth range: [{depth_np.min():.2f}, {depth_np.max():.2f}]")
-            print(f"  active cues: {int((uncertainty > 0.1).sum())}/9  |  audio intensity: {audio_params[1::3].max():.3f}")
+            stage_ms["total"].append((time.perf_counter() - t_start) * 1000)
+            n_stop += int(out.is_stop)
+
+            shadow_frac = float(1.0 - vis.mean().item())
+            if not args.quiet:
+                render_frame(frame_idx, uncertainty, out.is_stop, shadow_frac)
+                active = int((out.audio_params[1::3] > 0).sum())
+                print(f"  latency: {stage_ms['total'][-1]:5.1f} ms  |  "
+                      f"active cues: {active}/{cfg.agents.local.max_simultaneous_cues}  |  "
+                      f"peak audio: {np.abs(buf).max():.3f}  |  "
+                      f"clearance: {obs['min_clearance']:.2f}m"
+                      f"{'  COLLISION' if obs['collision'] else ''}")
+
+            obs = env.step(action=out.nav_action)
 
     env.close()
 
-    p50  = np.percentile(latencies, 50)
-    p95  = np.percentile(latencies, 95)
-    p_max = max(latencies)
-    print(f"\n{'═'*50}")
-    print(f"  Latency summary (camera→shadow→cues, excl. audio output):")
-    print(f"    p50={p50:.1f}ms  p95={p95:.1f}ms  max={p_max:.1f}ms  (target <100ms)")
-    status = "✓ PASS" if p95 < 100 else "✗ FAIL"
-    print(f"  {status}")
-    print(f"{'═'*50}")
+    print(f"\n{'═' * 52}")
+    print("  Latency budget (camera → audio buffer)")
+    for stage in ["sim", "bev", "shadow", "orchestrator", "audio"]:
+        v = stage_ms[stage]
+        print(f"    {stage:14s} p50={np.percentile(v, 50):6.2f}ms  p95={np.percentile(v, 95):6.2f}ms")
+    total = stage_ms["total"]
+    p50, p95 = np.percentile(total, 50), np.percentile(total, 95)
+    print(f"    {'TOTAL':14s} p50={p50:6.2f}ms  p95={p95:6.2f}ms  max={max(total):6.2f}ms")
+
+    n = len(total)
+    shadow_hz = 1000.0 / max(np.percentile(stage_ms["shadow"], 50), 1e-6)
+    print(f"\n  frames={n}  stop-overrides={n_stop}  shadow-ray throughput={shadow_hz:.0f} Hz")
+    checks = [
+        ("full pipeline latency < 100ms", p95 < 100),
+        ("shadow-ray throughput >= 15Hz", shadow_hz >= 15),
+    ]
+    ok = True
+    for label, passed in checks:
+        print(f"  {'✓ PASS' if passed else '✗ FAIL'}  {label}")
+        ok &= passed
+    print(f"{'═' * 52}")
+    sys.exit(0 if ok else 1)
 
 
 if __name__ == "__main__":

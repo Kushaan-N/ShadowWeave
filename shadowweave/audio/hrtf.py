@@ -1,4 +1,17 @@
-"""HRTF spatial audio engine — MIT KEMAR dataset + sounddevice playback."""
+"""HRTF spatial audio engine — MIT KEMAR dataset + sounddevice playback.
+
+Two audible bugs are fixed here:
+
+  * KEMAR measurements only exist for one side of the head; the left side is obtained
+    by SWAPPING the two ear channels. The old code took ``abs(azimuth)`` and used the
+    file as-is, so a cue at −90° (hard left) was bit-identical to one at +90° (hard
+    right). Left/right was completely unresolvable — fatal for the one thing this
+    system exists to do.
+
+  * The oscillator restarted at ``t = 0`` every buffer, so each 1024-sample block
+    began with a phase discontinuity. At 200Hz that is an audible click 43 times a
+    second. Phase is now carried across buffers per zone.
+"""
 
 from __future__ import annotations
 
@@ -9,10 +22,12 @@ from typing import Optional
 import numpy as np
 from omegaconf import DictConfig
 
+from .cues import AUDIO_PARAM_DIM, N_ZONES
 
 _KEMAR_URL = "https://sound.media.mit.edu/resources/KEMAR.tar.gz"
 _ZONE_NAMES = ["left_far", "left", "left_near", "front_left", "front",
                "front_right", "right_near", "right", "right_far"]
+_IDENTITY_HRTF = np.array([[1.0], [1.0]], dtype=np.float32)
 
 
 class HRTFEngine:
@@ -20,64 +35,87 @@ class HRTFEngine:
 
     Primary method: ``play(audio_params) -> None``
     Input:  (27,) float32 — (direction_idx, intensity, pitch_ratio) × 9 zones
-            direction_idx: index into _ZONE_NAMES (0–8)
-            intensity:     0–1, linear amplitude
-            pitch_ratio:   0.5–2.0, multiplied against base frequency
     """
 
     def __init__(self, cfg: DictConfig, hrtf_dir: Optional[str] = None) -> None:
         self.cfg = cfg
-        self.hrtf_dir = pathlib.Path(hrtf_dir) if hrtf_dir else pathlib.Path("data/kemar")
-        self._hrtfs: dict[str, np.ndarray] = {}  # zone_name → (2, filter_len) stereo HRTF
+        self.hrtf_dir = pathlib.Path(hrtf_dir or cfg.audio.hrtf_dir)
+        self._hrtfs: dict[str, np.ndarray] = {}
         self._stream = None
         self._lock = threading.Lock()
-        self._current_buffer: Optional[np.ndarray] = None  # (frames, 2) float32
+        self._current_buffer: Optional[np.ndarray] = None
+        self._phase = np.zeros(N_ZONES, dtype=np.float64)
+        self._spatialised = False
+        # Convolution tail from the previous buffer, so filters do not restart cold.
+        self._tail: Optional[np.ndarray] = None
+
+    @property
+    def is_spatialised(self) -> bool:
+        """False when running on panning filters (no KEMAR data present)."""
+        return self._spatialised
 
     def load_hrtfs(self) -> None:
         """Load HRTF filters for each zone from the KEMAR dataset."""
         if not self.hrtf_dir.exists():
             print(f"[HRTFEngine] KEMAR data not found at {self.hrtf_dir}.")
             print(f"  Download from {_KEMAR_URL} and extract to {self.hrtf_dir}")
-            print("  Using identity (no spatialisation) until KEMAR data is available.")
+            print("  Falling back to amplitude panning until KEMAR data is available.")
             for zone in _ZONE_NAMES:
-                self._hrtfs[zone] = np.array([[1.0], [1.0]], dtype=np.float32)
+                self._hrtfs[zone] = self._pan_filter(float(self.cfg.audio.zones[zone]))
+            self._spatialised = False
             return
 
-        # load .wav HRTF impulse responses per azimuth angle
         from scipy.io import wavfile
-        zone_azimuths = {
-            zone: getattr(self.cfg.audio.zones, zone)
-            for zone in _ZONE_NAMES
-        }
-        for zone, az in zone_azimuths.items():
-            hrtf_path = self._kemar_path_for_azimuth(az)
-            if hrtf_path is not None and hrtf_path.exists():
-                sr, data = wavfile.read(hrtf_path)
-                self._hrtfs[zone] = data.T.astype(np.float32) / 32768.0
-            else:
-                self._hrtfs[zone] = np.array([[1.0], [1.0]], dtype=np.float32)
 
-    def _kemar_path_for_azimuth(self, azimuth: int) -> Optional[pathlib.Path]:
-        """Map azimuth to nearest KEMAR measurement file."""
-        # KEMAR is at elevation 0, azimuth measured in 5° increments
-        snapped = round(azimuth / 5) * 5
-        fname = f"elev0/H0e{abs(snapped):03d}a.wav"
-        return self.hrtf_dir / fname
+        loaded = 0
+        for zone in _ZONE_NAMES:
+            az = float(self.cfg.audio.zones[zone])
+            path = self._kemar_path_for_azimuth(az)
+            if path is not None and path.exists():
+                _, data = wavfile.read(path)
+                hrtf = np.asarray(data, dtype=np.float32).T / 32768.0
+                if hrtf.ndim == 1:
+                    hrtf = np.stack([hrtf, hrtf])
+                # KEMAR files are measured on the RIGHT side. For a left-side azimuth
+                # the ipsilateral/contralateral ears swap.
+                if az < 0:
+                    hrtf = hrtf[::-1].copy()
+                self._hrtfs[zone] = hrtf
+                loaded += 1
+            else:
+                self._hrtfs[zone] = self._pan_filter(az)
+        self._spatialised = loaded > 0
+        print(f"[HRTFEngine] loaded {loaded}/{len(_ZONE_NAMES)} KEMAR filters from {self.hrtf_dir}")
+
+    def _pan_filter(self, azimuth_deg: float) -> np.ndarray:
+        """Constant-power stereo pan — a usable stand-in when KEMAR is absent.
+
+        Still gives real left/right separation, unlike the previous identity filter
+        which made all nine directions sound the same.
+        """
+        x = np.clip(azimuth_deg / 90.0, -1.0, 1.0)
+        angle = (x + 1.0) * (np.pi / 4.0)  # 0 → hard left, pi/2 → hard right
+        return np.array([[float(np.cos(angle))], [float(np.sin(angle))]], dtype=np.float32)
+
+    def _kemar_path_for_azimuth(self, azimuth: float) -> Optional[pathlib.Path]:
+        """Map azimuth to the nearest KEMAR measurement file (elevation 0, 5° steps)."""
+        snapped = int(round(abs(azimuth) / 5.0) * 5) % 360
+        return self.hrtf_dir / f"elev0/H0e{snapped:03d}a.wav"
 
     def open_stream(self) -> None:
         """Open sounddevice output stream in callback mode."""
         try:
             import sounddevice as sd
-            self._stream = sd.OutputStream(
-                samplerate=self.cfg.audio.sample_rate,
-                blocksize=self.cfg.audio.buffer_size,
-                channels=2,
-                dtype="float32",
-                callback=self._audio_callback,
-            )
-            self._stream.start()
         except ImportError:
             raise ImportError("sounddevice required — pip install sounddevice")
+        self._stream = sd.OutputStream(
+            samplerate=self.cfg.audio.sample_rate,
+            blocksize=self.cfg.audio.buffer_size,
+            channels=2,
+            dtype="float32",
+            callback=self._audio_callback,
+        )
+        self._stream.start()
 
     def close_stream(self) -> None:
         if self._stream is not None:
@@ -86,37 +124,62 @@ class HRTFEngine:
             self._stream = None
 
     def play(self, audio_params: np.ndarray) -> None:
-        """Synthesise and enqueue audio for the next buffer fill.
-
-        audio_params: (27,) = (direction, intensity, pitch) × 9 zones
-        """
-        params = audio_params.reshape(9, 3)
+        """Synthesise and enqueue audio for the next buffer fill."""
+        params = np.asarray(audio_params, dtype=np.float32).reshape(N_ZONES, 3)
         buf = self._synthesise(params)
         with self._lock:
             self._current_buffer = buf
 
     def _synthesise(self, params: np.ndarray) -> np.ndarray:
         """Mix zone tones into a stereo buffer of length buffer_size."""
-        n = self.cfg.audio.buffer_size
-        sr = self.cfg.audio.sample_rate
-        t = np.arange(n, dtype=np.float32) / sr
+        from scipy.signal import fftconvolve
+
+        n = int(self.cfg.audio.buffer_size)
+        sr = float(self.cfg.audio.sample_rate)
+        if not self._hrtfs:
+            self.load_hrtfs()
+
         out = np.zeros((n, 2), dtype=np.float32)
+        max_tail = 0
+        tails: list[tuple[np.ndarray, np.ndarray]] = []
 
         for i, zone in enumerate(_ZONE_NAMES):
             _, intensity, pitch_ratio = params[i]
             if intensity < 1e-3:
+                self._phase[i] = 0.0
                 continue
-            freq = self.cfg.audio.base_frequency * float(pitch_ratio + 0.5)
-            tone = intensity * np.sin(2 * np.pi * freq * t).astype(np.float32)
-            hrtf = self._hrtfs.get(zone, np.array([[1.0], [1.0]], dtype=np.float32))
-            from scipy.signal import fftconvolve
-            left  = fftconvolve(tone, hrtf[0])[:n]
-            right = fftconvolve(tone, hrtf[1])[:n]
-            out[:, 0] += left
-            out[:, 1] += right
 
-        # clip to avoid distortion
-        return np.clip(out, -1.0, 1.0)
+            freq = float(self.cfg.audio.base_frequency) * float(pitch_ratio + 0.5)
+            # Continue from the stored phase instead of restarting at t=0, which was
+            # producing a discontinuity — an audible click — at every buffer boundary.
+            omega = 2.0 * np.pi * freq / sr
+            phases = self._phase[i] + omega * np.arange(n, dtype=np.float64)
+            self._phase[i] = float((phases[-1] + omega) % (2.0 * np.pi))
+            tone = (float(intensity) * np.sin(phases)).astype(np.float32)
+
+            hrtf = self._hrtfs.get(zone, _IDENTITY_HRTF)
+            left = fftconvolve(tone, hrtf[0])
+            right = fftconvolve(tone, hrtf[1])
+            out[:, 0] += left[:n]
+            out[:, 1] += right[:n]
+            if left.size > n:
+                tails.append((left[n:], right[n:]))
+                max_tail = max(max_tail, left.size - n)
+
+        # Overlap-add the previous buffer's filter tail.
+        if self._tail is not None:
+            k = min(len(self._tail), n)
+            out[:k] += self._tail[:k]
+        if tails:
+            merged = np.zeros((max_tail, 2), dtype=np.float32)
+            for l, r in tails:
+                merged[: l.size, 0] += l
+                merged[: r.size, 1] += r
+            self._tail = merged
+        else:
+            self._tail = None
+
+        return np.clip(out * float(self.cfg.audio.master_gain), -1.0, 1.0)
 
     def _audio_callback(self, outdata: np.ndarray, frames: int, time_info, status) -> None:
         with self._lock:
@@ -128,20 +191,43 @@ class HRTFEngine:
 
 
 if __name__ == "__main__":
-    from omegaconf import OmegaConf
-    import pathlib
+    from ..utils import load_config
 
-    cfg_path = pathlib.Path(__file__).parents[1] / "configs" / "default.yaml"
-    cfg = OmegaConf.load(cfg_path)
-
+    cfg = load_config()
     engine = HRTFEngine(cfg)
     engine.load_hrtfs()
+    print(f"  spatialised via KEMAR: {engine.is_spatialised}")
 
-    dummy_params = np.zeros(27, dtype=np.float32)
-    # zone 4 (front), intensity=0.5, pitch=1.0
-    dummy_params[4 * 3 + 1] = 0.5
-    dummy_params[4 * 3 + 2] = 0.5
+    def one_zone(idx: int, intensity: float = 0.6) -> np.ndarray:
+        p = np.zeros(AUDIO_PARAM_DIM, dtype=np.float32)
+        p[idx * 3] = idx
+        p[idx * 3 + 1] = intensity
+        p[idx * 3 + 2] = 0.5
+        return p.reshape(N_ZONES, 3)
 
-    buf = engine._synthesise(dummy_params.reshape(9, 3))
-    print(f"HRTFEngine synthesised buffer: {buf.shape}, range=[{buf.min():.3f}, {buf.max():.3f}]")
-    print("HRTFEngine OK (no audio device needed for stub test)")
+    buf = engine._synthesise(one_zone(4))
+    print(f"HRTFEngine buffer: {buf.shape}, range=[{buf.min():.3f}, {buf.max():.3f}]")
+
+    # Hard left vs hard right must not be identical.
+    engine._phase[:] = 0.0
+    engine._tail = None
+    left_buf = engine._synthesise(one_zone(1))    # 'left', azimuth -90
+    engine._phase[:] = 0.0
+    engine._tail = None
+    right_buf = engine._synthesise(one_zone(7))   # 'right', azimuth +90
+    l_bias = float(np.abs(left_buf[:, 0]).mean() - np.abs(left_buf[:, 1]).mean())
+    r_bias = float(np.abs(right_buf[:, 0]).mean() - np.abs(right_buf[:, 1]).mean())
+    print(f"  L-zone channel bias (L-R): {l_bias:+.4f}   R-zone: {r_bias:+.4f}")
+    assert l_bias > 0 > r_bias, "left and right zones must differ in channel balance"
+    assert not np.allclose(left_buf, right_buf), "left/right collapsed to the same signal"
+
+    # Phase continuity across buffers: no discontinuity at the seam.
+    engine._phase[:] = 0.0
+    engine._tail = None
+    b1 = engine._synthesise(one_zone(4))
+    b2 = engine._synthesise(one_zone(4))
+    seam = abs(float(b2[0, 0] - b1[-1, 0]))
+    within = float(np.abs(np.diff(b1[:, 0])).max())
+    print(f"  seam step={seam:.5f} vs max within-buffer step={within:.5f}  (seam must not spike)")
+    assert seam <= within * 3, "phase discontinuity at buffer boundary"
+    print("HRTFEngine OK (no audio device needed for this test)")
