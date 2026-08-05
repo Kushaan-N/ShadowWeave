@@ -139,7 +139,7 @@ class TestCheckpointDurability:
     def test_save_is_atomic(self, cfg, tmp_path):
         """A job killed mid-save must not leave a truncated checkpoint behind."""
         from shadowweave.utils import load_checkpoint, save_checkpoint
-        from shadowweave.world_model.diffusion import build_world_model
+        from shadowweave.world_model import build_world_model
 
         p = tmp_path / "c.pt"
         model = build_world_model(cfg)
