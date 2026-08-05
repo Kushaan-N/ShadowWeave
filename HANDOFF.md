@@ -6,6 +6,151 @@ explains what state it is in, what will break, and the exact order to run things
 
 ---
 
+## 0. The whole thing, start to finish
+
+Copy-paste in order. Sections 1–10 explain *why* each step is there; this is the what.
+
+### Step 1 — code
+
+```bash
+git clone git@github.com:Kushaan-N/ShadowWeave.git
+cd ShadowWeave
+df -h .                     # need ~85 GB free; see §4 to shrink it
+```
+
+Clone rather than copying a working directory — a copy drags in `data/rollouts/`
+(a degenerate pre-BEV dataset) and `checkpoints/` (an unloadable model). See §2.
+
+### Step 2 — environment, **on a GPU node**
+
+```bash
+srun --gres=gpu:1 --pty bash              # interactive GPU shell
+module load python/3.11                   # whatever your cluster provides, >= 3.10
+./scripts/setup_venv.sh                   # reads nvidia-smi, picks matching wheels
+source .venv/bin/activate
+python slurm/preflight.py                 # must show CUDA + AMP + a depth buffer
+exit                                      # back to the login node
+```
+
+Do **not** run `setup_venv.sh` on a login node: with no `nvidia-smi` it installs CPU
+wheels and every job afterwards silently runs on CPU. The script prints the index it
+chose — check that line says `cu124` / `cu121` / `cu118`, not `cpu`.
+
+Off a small `$HOME`:
+```bash
+SW_VENV=/scratch/$USER/sw-venv ./scripts/setup_venv.sh
+export SW_VENV=/scratch/$USER/sw-venv     # and put this in slurm/env.sh
+```
+
+### Step 3 — point SLURM at the cluster (once)
+
+```bash
+$EDITOR slurm/env.sh
+```
+
+Set `SW_PYTHON_MODULE` (e.g. `python/3.11`) and `SW_CUDA_MODULE` (`module avail cuda`).
+`env.sh` finds `./.venv` automatically; set `SW_VENV` if it lives elsewhere.
+
+### Step 4 — run everything
+
+One command, submitted as a dependency chain:
+
+```bash
+./slurm/pipeline.sh
+squeue -u $USER                           # watch
+```
+
+Or stage by stage, which is what you want the first time — each `sbatch` waits for the
+previous to succeed:
+
+```bash
+# data: 8-way array (train) + 4-way (val), disjoint seeds, ~42 GB
+TRAIN=$(sbatch --parsable slurm/gen_data.sbatch)
+VAL=$(SW_SPLIT=val SW_EPISODES=80 sbatch --parsable --array=0-3 slurm/gen_data.sbatch)
+
+# world model — deterministic U-Net
+WM=$(sbatch --parsable --dependency=afterok:$TRAIN:$VAL slurm/train_worldmodel.sbatch)
+
+# world model — diffusion variant, for the ablation
+DIFF=$(SW_CKPT_DIR=checkpoints/world_model_diffusion \
+       SW_OVERRIDES="world_model.architecture=diffusion" \
+       sbatch --parsable --dependency=afterok:$TRAIN:$VAL slurm/train_worldmodel.sbatch)
+
+# PPO — refuses to start without a world model checkpoint
+RL=$(sbatch --parsable --dependency=afterok:$WM slurm/train_rl.sbatch)
+
+# eval — 301 steps/episode or the 10s horizon is silently never scored (§6)
+EV=$(SW_EVAL_EPISODES=90 SW_OVERRIDES="eval.steps_per_episode=301" \
+     sbatch --parsable --dependency=afterok:$RL slurm/eval.sbatch)
+
+# eval the diffusion model into its OWN results dir — run_eval always writes
+# <eval.results_dir>/eval_summary.json, so a second run would overwrite the first
+EVD=$(SW_CKPT=checkpoints/world_model_diffusion/best.pt SW_EVAL_EPISODES=90 \
+      SW_OVERRIDES="eval.steps_per_episode=301 eval.results_dir=results_diffusion" \
+      sbatch --parsable --dependency=afterok:$DIFF slurm/eval.sbatch)
+
+echo "submitted: data=$TRAIN,$VAL  wm=$WM  diffusion=$DIFF  rl=$RL  eval=$EV,$EVD"
+squeue -u $USER
+```
+
+Multi-GPU is a flag, not a code change:
+```bash
+sbatch --gres=gpu:4 slurm/train_worldmodel.sbatch     # auto-switches to torchrun/DDP
+```
+
+### Step 5 — check the data before trusting anything downstream
+
+Run this the moment the data jobs finish. A degenerate dataset is the single failure
+that has cost the most time on this project:
+
+```bash
+source .venv/bin/activate
+python - <<'EOF'
+import numpy as np, glob
+f = sorted(glob.glob("data/rollouts/train/*.npz"))
+print(f"{len(f)} episodes")
+d = np.load(f[0])
+assert "bev_occupancy" in d.files, f"WRONG SCHEMA: {sorted(d.files)}"
+t_std = d["target"].std(axis=0).mean()
+flow  = (d["bev_flow"] != 0).mean()
+print(f"target std over time : {t_std:.5f}   (must be > 1e-3)")
+print(f"flow nonzero frac    : {flow:.4f}   (must be > 0)")
+assert t_std > 1e-3 and flow > 0, "DEGENERATE — the agent is not moving; do not train"
+print("data OK")
+EOF
+```
+
+### Step 6 — results
+
+```bash
+source .venv/bin/activate
+python scripts/report.py --markdown results/report.md   # scored table vs targets
+python -m shadowweave.eval.reasoning --split val        # spatial-reasoning benchmark
+python scripts/visualize.py                             # BEV figures
+wandb sync wandb/                                       # W&B runs offline by default
+
+# compare the two world models (paths match the results_dir used above)
+python scripts/report.py --compare results/eval_summary.json \
+                                   results_diffusion/eval_summary.json
+```
+
+Read **gain over the baseline**, not raw IOU — see §8 for why.
+
+### Monitoring and recovery
+
+```bash
+squeue -u $USER                          # queue
+tail -f slurm/logs/worldmodel_*.out      # live log
+sacct -j <jobid> --format=JobID,State,Elapsed,MaxRSS,ExitCode
+scancel <jobid>
+
+# training requeues itself 120s before the time limit and resumes from last.pt.
+# To start genuinely fresh instead:
+SW_FRESH=1 sbatch slurm/train_worldmodel.sbatch
+```
+
+---
+
 ## 1. State of the project in one paragraph
 
 Everything is built and tested; **nothing has been trained**. 210 tests pass, 16 module
