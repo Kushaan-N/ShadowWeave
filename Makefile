@@ -1,4 +1,4 @@
-.PHONY: help setup test smoke bench data train rl eval report viz dashboard preflight demos clean clean-data
+.PHONY: help setup test smoke bench data train rl eval reason report viz dashboard preflight demos clean clean-data
 
 PYTHON ?= python
 EPISODES ?= 400
@@ -16,6 +16,7 @@ help:
 	@echo "  make train       train the world model"
 	@echo "  make rl          train the local agent with PPO"
 	@echo "  make eval        run the evaluation harness"
+	@echo "  make reason      spatial-reasoning benchmark vs trivial strategies"
 	@echo "  make report      render the latest eval results as a scored table"
 	@echo "  make viz         render BEV prediction figures from a checkpoint"
 	@echo "  make dashboard   launch the live Gradio dashboard"
@@ -43,7 +44,7 @@ demos:
 	          shadowweave.world_model.unet shadowweave.world_model.ddpm shadowweave.world_model.dataset \
 	          shadowweave.agents.local_agent shadowweave.agents.global_agent \
 	          shadowweave.agents.orchestrator shadowweave.audio.cues shadowweave.audio.hrtf \
-	          shadowweave.eval.metrics shadowweave.sim.mujoco_env; do \
+	          shadowweave.eval.metrics shadowweave.eval.reasoning shadowweave.sim.mujoco_env; do \
 		echo "── $$m ──"; $(PYTHON) -m $$m >/dev/null 2>&1 && echo "  OK" || echo "  FAILED"; \
 	done
 
@@ -59,6 +60,9 @@ rl:
 
 eval:
 	$(PYTHON) -m shadowweave.eval.run_eval
+
+reason:
+	$(PYTHON) -m shadowweave.eval.reasoning --split val
 
 report:
 	$(PYTHON) scripts/report.py --markdown results/report.md
