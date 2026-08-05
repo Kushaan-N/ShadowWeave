@@ -24,7 +24,7 @@ from omegaconf import DictConfig
 
 from .cues import AUDIO_PARAM_DIM, N_ZONES
 
-_KEMAR_URL = "https://sound.media.mit.edu/resources/KEMAR.tar.gz"
+_KEMAR_URL = "https://sound.media.mit.edu/resources/KEMAR/compact.zip"
 _ZONE_NAMES = ["left_far", "left", "left_near", "front_left", "front",
                "front_right", "right_near", "right", "right_far"]
 _IDENTITY_HRTF = np.array([[1.0], [1.0]], dtype=np.float32)
@@ -40,10 +40,14 @@ class HRTFEngine:
     def __init__(self, cfg: DictConfig, hrtf_dir: Optional[str] = None) -> None:
         self.cfg = cfg
         self.hrtf_dir = pathlib.Path(hrtf_dir or cfg.audio.hrtf_dir)
+        if not self.hrtf_dir.is_absolute():
+            # Resolve against the repo root, not the CWD — the dashboard and tests
+            # are not guaranteed to run from the repo root.
+            self.hrtf_dir = pathlib.Path(__file__).resolve().parents[2] / self.hrtf_dir
         self._hrtfs: dict[str, np.ndarray] = {}
         self._stream = None
         self._lock = threading.Lock()
-        self._current_buffer: Optional[np.ndarray] = None
+        self._params: Optional[np.ndarray] = None
         self._phase = np.zeros(N_ZONES, dtype=np.float64)
         self._spatialised = False
         # Convolution tail from the previous buffer, so filters do not restart cold.
@@ -72,9 +76,20 @@ class HRTFEngine:
             az = float(self.cfg.audio.zones[zone])
             path = self._kemar_path_for_azimuth(az)
             if path is not None and path.exists():
-                _, data = wavfile.read(path)
+                try:
+                    sr_file, data = wavfile.read(path)
+                except Exception as exc:
+                    # One corrupt file must not abort the load and leave the
+                    # remaining zones without lateralisation.
+                    print(f"[HRTFEngine] unreadable HRTF {path}: {exc} — pan fallback for '{zone}'")
+                    self._hrtfs[zone] = self._pan_filter(az)
+                    continue
+                if int(sr_file) != int(self.cfg.audio.sample_rate):
+                    print(f"[HRTFEngine] {path.name} is {sr_file}Hz but engine runs at "
+                          f"{self.cfg.audio.sample_rate}Hz — spatial cues will be shifted")
                 hrtf = np.asarray(data, dtype=np.float32).T / 32768.0
                 if hrtf.ndim == 1:
+                    print(f"[HRTFEngine] {path.name} is mono — zone '{zone}' has no interaural cue")
                     hrtf = np.stack([hrtf, hrtf])
                 # KEMAR files are measured on the RIGHT side. For a left-side azimuth
                 # the ipsilateral/contralateral ears swap.
@@ -93,13 +108,19 @@ class HRTFEngine:
         Still gives real left/right separation, unlike the previous identity filter
         which made all nine directions sound the same.
         """
-        x = np.clip(azimuth_deg / 90.0, -1.0, 1.0)
+        # Normalise by the widest configured zone, not ±90° — clipping at 90 made
+        # left_far (−135°) bit-identical to left (−90°).
+        span = max(abs(float(a)) for a in self.cfg.audio.zones.values()) or 90.0
+        x = np.clip(azimuth_deg / span, -1.0, 1.0)
         angle = (x + 1.0) * (np.pi / 4.0)  # 0 → hard left, pi/2 → hard right
         return np.array([[float(np.cos(angle))], [float(np.sin(angle))]], dtype=np.float32)
 
     def _kemar_path_for_azimuth(self, azimuth: float) -> Optional[pathlib.Path]:
         """Map azimuth to the nearest KEMAR measurement file (elevation 0, 5° steps)."""
-        snapped = int(round(abs(azimuth) / 5.0) * 5) % 360
+        # Wrap into [-180, 180] BEFORE abs() — the compact set only has 0–180°, so
+        # e.g. −190° must resolve to 170°, not a nonexistent 190° file.
+        wrapped = ((azimuth + 180.0) % 360.0) - 180.0
+        snapped = int(round(abs(wrapped) / 5.0) * 5)
         return self.hrtf_dir / f"elev0/H0e{snapped:03d}a.wav"
 
     def open_stream(self) -> None:
@@ -124,17 +145,25 @@ class HRTFEngine:
             self._stream = None
 
     def play(self, audio_params: np.ndarray) -> None:
-        """Synthesise and enqueue audio for the next buffer fill."""
-        params = np.asarray(audio_params, dtype=np.float32).reshape(N_ZONES, 3)
-        buf = self._synthesise(params)
-        with self._lock:
-            self._current_buffer = buf
+        """Publish the latest cue parameters; the stream callback synthesises from them.
 
-    def _synthesise(self, params: np.ndarray) -> np.ndarray:
-        """Mix zone tones into a stereo buffer of length buffer_size."""
+        Synthesis happens per callback rather than here: the cue update rate (~20Hz)
+        and the device callback rate (~43Hz at 1024/44100) are not locked, so a
+        buffer queued from this thread would be replayed with a phase seam — an
+        audible click — on every callback that lands between updates.
+        """
+        params = np.asarray(audio_params, dtype=np.float32).reshape(N_ZONES, 3)
+        with self._lock:
+            self._params = params.copy()
+
+    def _synthesise(self, params: np.ndarray, n: Optional[int] = None) -> np.ndarray:
+        """Mix zone tones into a stereo buffer of n samples (default buffer_size)."""
         from scipy.signal import fftconvolve
 
-        n = int(self.cfg.audio.buffer_size)
+        if n is None:
+            n = int(self.cfg.audio.buffer_size)
+        if n <= 0:
+            raise ValueError(f"buffer length must be positive, got {n}")
         sr = float(self.cfg.audio.sample_rate)
         if not self._hrtfs:
             self.load_hrtfs()
@@ -145,7 +174,9 @@ class HRTFEngine:
 
         for i, zone in enumerate(_ZONE_NAMES):
             _, intensity, pitch_ratio = params[i]
-            if intensity < 1e-3:
+            # NaN passes every < comparison, flows into the buffer, and — worse —
+            # poisons the stored phase for all future buffers. Treat as silent.
+            if not (np.isfinite(intensity) and np.isfinite(pitch_ratio)) or intensity < 1e-3:
                 self._phase[i] = 0.0
                 continue
 
@@ -183,11 +214,14 @@ class HRTFEngine:
 
     def _audio_callback(self, outdata: np.ndarray, frames: int, time_info, status) -> None:
         with self._lock:
-            buf = self._current_buffer
-        if buf is not None and len(buf) >= frames:
-            outdata[:] = buf[:frames]
-        else:
+            params = self._params
+        if params is None:
             outdata[:] = 0.0
+            return
+        # Synthesising exactly `frames` samples here keeps oscillator phase
+        # continuous at every callback regardless of the cue update rate, and
+        # handles devices that request a block size other than buffer_size.
+        outdata[:] = self._synthesise(params, frames)
 
 
 if __name__ == "__main__":
