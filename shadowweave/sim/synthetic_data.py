@@ -127,6 +127,12 @@ class SyntheticDataGenerator:
         out_dir = pathlib.Path(output_dir) / split
         out_dir.mkdir(parents=True, exist_ok=True)
 
+        if n_episodes <= 0:
+            # A SLURM shard whose arithmetic lands on zero episodes must no-op,
+            # not crash in the summary print below on never-bound locals.
+            print(f"  0 episodes requested for split '{split}' — nothing to do")
+            return
+
         T = steps_per_episode or self.cfg.data.steps_per_episode
         horizon_frames = [int(h * self.fps) for h in self.horizons]
         max_h = max(horizon_frames)
