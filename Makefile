@@ -1,4 +1,4 @@
-.PHONY: help setup test smoke bench data train rl eval reason report viz dashboard preflight demos clean clean-data
+.PHONY: help setup-venv setup test smoke bench data train rl eval reason report viz dashboard preflight demos clean clean-data
 
 PYTHON ?= python
 EPISODES ?= 400
@@ -6,6 +6,7 @@ VAL_EPISODES ?= 80
 
 help:
 	@echo "ShadowWeave"
+	@echo "  make setup-venv  create a .venv with CUDA-matched torch wheels"
 	@echo "  make setup       install the package in editable mode"
 	@echo "  make test        run the pytest suite"
 	@echo "  make smoke       end-to-end pipeline smoke test (no training needed)"
@@ -22,6 +23,9 @@ help:
 	@echo "  make dashboard   launch the live Gradio dashboard"
 	@echo "  make clean       remove caches and build artefacts"
 	@echo "  make clean-data  remove generated rollouts and memmap caches"
+
+setup-venv:
+	./scripts/setup_venv.sh
 
 setup:
 	$(PYTHON) -m pip install -e ".[sim,viz,audio,depth,dev]"
