@@ -23,7 +23,7 @@ pip install -e .
 
 make smoke                              # end-to-end smoke test, no training needed
 make bench                              # size batch/workers before booking GPU time
-make test                               # 150 tests
+make test                               # 172 tests
 ```
 
 `make help` lists everything:
@@ -55,6 +55,7 @@ python -m shadowweave.shadow.bev        # BEV occupancy / shadow projection
 python -m shadowweave.sim.mujoco_env    # sim observations across all three tiers
 python -m shadowweave.audio.hrtf        # spatialisation + phase-continuity checks
 python -m shadowweave.eval.baselines    # baselines, lead time, calibration
+python -m shadowweave.world_model.ddpm  # diffusion sampling + sample diversity
 ```
 
 ## Dashboard
@@ -128,6 +129,38 @@ camera / MuJoCo ──> depth (128x128, metres / max_range_m)
 Everything downstream of depth is differentiable, so the raycaster's ray→zone
 assignment trains end to end.
 
+### Two world models
+
+`world_model.architecture` selects between them; both expose the same
+`loss(cond, target)` / `predict(cond)` interface, so training, eval, RL and the
+dashboard are agnostic to which one is loaded.
+
+| | `unet` (default) | `diffusion` |
+|---|---|---|
+| objective | weighted BCE + horizon smoothness | epsilon-MSE (DDPM, cosine schedule) |
+| output | one deterministic occupancy map | samples from p(future \| observation) |
+| inference | single forward pass | DDIM, `sample_steps` is the latency knob |
+
+**Why diffusion is here and not just on the label.** BCE is mean-seeking. Where the
+future is genuinely multimodal the deterministic model converges to the conditional
+*mean* and hedges — and this system has an unusually clean source of multimodality:
+cells the sensor cannot see. Behind an obstacle there may or may not be something;
+averaging those futures produces a grey smear over exactly the region the project
+exists to reason about. Diffusion draws coherent hypotheses instead.
+
+That makes the claim measurable rather than rhetorical. `shadow_diversity` reports the
+ratio of sample disagreement inside shadow to disagreement in observed space:
+
+- **ratio > 1** — the model has tied its uncertainty to visibility
+- **ratio ≈ 1** — the samples are just noisy everywhere
+
+A deterministic model cannot be scored on this at all; its std is identically zero.
+
+```bash
+make train                                              # deterministic U-Net
+python -m shadowweave.world_model.train --overrides world_model.architecture=diffusion
+```
+
 ### Frames and conventions
 
 | Quantity | Frame | Meaning |
@@ -166,7 +199,7 @@ so what the agent observes genuinely determines what it must predict.
 shadowweave/
 ├── ingestion/     camera.py, depth.py (Depth Anything V2)
 ├── shadow/        raycast.py (core), bev.py, occupancy.py, zones.py, visualizer.py
-├── world_model/   diffusion.py (U-Net + ConvLSTM), dataset.py, train.py
+├── world_model/   unet.py (U-Net + ConvLSTM), ddpm.py (diffusion), dataset.py, train.py
 ├── agents/        local_agent.py, global_agent.py, orchestrator.py
 ├── audio/         hrtf.py, cues.py
 ├── sim/           mujoco_env.py, synthetic_data.py
@@ -193,6 +226,7 @@ The test suite is organised by what each file protects:
 | `test_verification.py` | regressions found by adversarial review |
 | `test_robustness.py` | DDP, degenerate sensor input, hostile configs, shard arithmetic |
 | `test_demos.py` | every module's `__main__` still runs |
+| `test_diffusion.py` | the diffusion model samples rather than collapsing; shadow-diversity metric |
 
 All hyperparameters live in `configs/default.yaml`. Override anything from the CLI:
 
