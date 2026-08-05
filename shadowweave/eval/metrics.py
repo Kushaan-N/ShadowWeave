@@ -20,7 +20,13 @@ def iou(pred: torch.Tensor, target: torch.Tensor, threshold: float = 0.5) -> tor
     dims = (-2, -1)
     inter = (p & t).sum(dim=dims).float()
     union = (p | t).sum(dim=dims).float()
-    return torch.where(union > 0, inter / union.clamp_min(1.0), torch.ones_like(inter))
+    score = torch.where(union > 0, inter / union.clamp_min(1.0), torch.ones_like(inter))
+
+    # A NaN prediction compares False everywhere, so against an empty target it would
+    # land in the empty-vs-empty branch and score a perfect 1.0. A model emitting NaN
+    # has failed; score it 0 rather than letting it top the table.
+    broken = (~torch.isfinite(pred)).any(dim=dims)
+    return torch.where(broken, torch.zeros_like(score), score)
 
 
 def masked_iou(
