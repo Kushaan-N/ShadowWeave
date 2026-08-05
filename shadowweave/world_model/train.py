@@ -118,7 +118,12 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
     is_main = rank == 0
 
     seed_everything(cfg.seed + rank, deterministic=cfg.deterministic)
-    device = get_device() if world_size == 1 else torch.device(f"cuda:{local_rank}")
+    # Pin to this rank's GPU only when there is one. Hardcoding cuda:{local_rank}
+    # whenever world_size > 1 breaks any CPU/gloo distributed run outright.
+    if world_size > 1 and torch.cuda.is_available():
+        device = torch.device(f"cuda:{local_rank}")
+    else:
+        device = get_device()
     use_amp = bool(cfg.world_model.amp) and device.type == "cuda"
 
     if is_main:
@@ -165,6 +170,18 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
         val_ds, batch_size=cfg.world_model.batch_size, shuffle=False,
         num_workers=nw, pin_memory=pin, persistent_workers=nw > 0,
     )
+
+    # drop_last with a batch larger than the split yields zero batches, so every
+    # epoch would silently do nothing and still report a loss of 0.0. Fail here
+    # rather than after hours of "training".
+    if len(train_dl) == 0:
+        raise ValueError(
+            f"train split has {len(train_ds)} samples but batch_size="
+            f"{cfg.world_model.batch_size} with drop_last=True yields 0 batches. "
+            f"Generate more rollouts or lower world_model.batch_size."
+        )
+    if len(val_dl) == 0:
+        raise ValueError(f"val split has {len(val_ds)} samples — too few to evaluate.")
 
     model = build_world_model(cfg).to(device)
     if is_main:
