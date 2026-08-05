@@ -20,10 +20,14 @@ import pathlib
 import sys
 import time
 
-import numpy as np
-import torch
-
 sys.path.insert(0, str(pathlib.Path(__file__).parents[1]))
+
+# Before torch: shadowweave.__init__ sets PYTORCH_ENABLE_MPS_FALLBACK, which torch
+# reads once at import — set afterwards it does nothing.
+import shadowweave  # noqa: F401,E402
+
+import numpy as np  # noqa: E402
+import torch  # noqa: E402
 
 from shadowweave.agents.global_agent import GlobalAgent  # noqa: E402
 from shadowweave.agents.local_agent import LocalAgent  # noqa: E402
