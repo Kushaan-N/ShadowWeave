@@ -37,3 +37,7 @@ results/
 wandb/
 runs/
 *.sif
+
+# Python venv
+.venv/
+venv/
