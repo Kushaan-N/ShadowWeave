@@ -53,6 +53,10 @@ def load_config(path: Optional[str] = None, overrides: Optional[list[str]] = Non
     """Load default.yaml, then apply ``key=value`` dotlist overrides from the CLI."""
     cfg = OmegaConf.load(path or _CONFIG_PATH)
     if overrides:
+        # Struct mode makes a typo'd key an error instead of a silently-ignored
+        # new entry — a misspelled hyperparameter on a cluster job otherwise
+        # trains with defaults and one only finds out after the run.
+        OmegaConf.set_struct(cfg, True)
         cfg = OmegaConf.merge(cfg, OmegaConf.from_dotlist(overrides))
     return cfg  # type: ignore[return-value]
 
@@ -116,7 +120,12 @@ def load_checkpoint(path: str | pathlib.Path, map_location: Any = "cpu") -> dict
     raw = torch.load(path, map_location=map_location, weights_only=False)
     if isinstance(raw, dict) and "format_version" in raw:
         return raw
-    # Legacy: the whole file is the state_dict, architecture unknown.
+    # Legacy: the whole file is the state_dict, architecture unknown. Say so
+    # loudly — otherwise the failure surfaces later as raw missing-key soup with
+    # no hint that the file itself is the problem.
+    print(f"[load_checkpoint] WARNING: {path} is a legacy bare-state_dict checkpoint "
+          "with no embedded config — the architecture it was trained with is "
+          "unknown; if loading fails with missing/mismatched keys, retrain it")
     return {"format_version": 1, "model": raw, "config": None, "epoch": 0, "metrics": {}}
 
 
