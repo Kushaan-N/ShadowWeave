@@ -32,7 +32,7 @@ import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import DictConfig
 
-from ..utils import supports_grid_sample_3d
+from ..utils import sanitize_depth, supports_grid_sample_3d
 
 
 class ShadowRaycaster(nn.Module):
@@ -107,6 +107,8 @@ class ShadowRaycaster(nn.Module):
                 Value = fraction of the ray's range hidden behind the first surface,
                 averaged over the elevation band. Close obstacle → large shadow.
         """
+        # A NaN here would otherwise reach the audio output unflagged.
+        depth_map = sanitize_depth(depth_map)
         B = depth_map.shape[0]
         R, E = self.num_rays, self.n_elevation
 
