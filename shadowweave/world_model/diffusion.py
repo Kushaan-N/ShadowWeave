@@ -34,7 +34,9 @@ def _n_input_channels(cfg: DictConfig) -> int:
 class DoubleConv(nn.Module):
     def __init__(self, in_ch: int, out_ch: int) -> None:
         super().__init__()
-        groups = min(8, out_ch)
+        # Largest divisor of out_ch up to 8 — min(8, out_ch) crashes GroupNorm for
+        # any channel count not divisible by 8 (e.g. base_channels=12).
+        groups = next(g for g in (8, 4, 2, 1) if out_ch % g == 0)
         self.net = nn.Sequential(
             nn.Conv2d(in_ch, out_ch, 3, padding=1), nn.GroupNorm(groups, out_ch), nn.GELU(),
             nn.Conv2d(out_ch, out_ch, 3, padding=1), nn.GroupNorm(groups, out_ch), nn.GELU(),
@@ -84,9 +86,11 @@ class WorldModel(nn.Module):
         # A 96x96 grid survives four 2x downsamples only because 96 = 32 * 3; assert
         # rather than let a mis-set bev.size silently produce a shape error deep in
         # the decoder skip connections.
-        s = bev_stack.shape[-1]
-        if s % 16 != 0:
-            raise ValueError(f"bev.size must be divisible by 16 for the 4-level U-Net, got {s}")
+        h, w = bev_stack.shape[-2], bev_stack.shape[-1]
+        if h % 16 != 0 or w % 16 != 0:
+            raise ValueError(
+                f"spatial dims must be divisible by 16 for the 4-level U-Net, got {h}x{w}"
+            )
 
         e1 = self.enc1(bev_stack)
         e2 = self.enc2(self.pool(e1))
