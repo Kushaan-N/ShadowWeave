@@ -38,7 +38,7 @@ from shadowweave.utils import (
     load_config,
     seed_everything,
 )
-from shadowweave.world_model.diffusion import build_world_model
+from shadowweave.world_model import build_world_model
 
 
 def load_world_model(cfg: DictConfig, device: torch.device):
@@ -120,7 +120,7 @@ def make_env_class(cfg: DictConfig, device: torch.device):
                 stack.append(vis)
             if "flow" in ch:
                 stack.append(flow)
-            wm_pred = torch.sigmoid(world_model(torch.cat(stack, dim=1)))
+            wm_pred = world_model.predict(torch.cat(stack, dim=1))
             wm_zones = pool_predictions_to_zones_torch(wm_pred)[0].cpu().numpy().ravel()
 
             shadow_exposure = float(1.0 - vis.mean().item())
