@@ -54,6 +54,9 @@ def main() -> None:
     ap.add_argument("--difficulty", type=str, default=None,
                     choices=["static", "moving", "debris"])
     ap.add_argument("--quiet", action="store_true", help="latency summary only")
+    ap.add_argument("--warmup", type=int, default=3,
+                    help="frames excluded from the latency budget (lazy imports, "
+                         "FFT plan setup and shader compilation land on the first call)")
     ap.add_argument("--overrides", nargs="*", default=[])
     args = ap.parse_args()
 
@@ -128,18 +131,29 @@ def main() -> None:
 
     env.close()
 
+    # Lazy imports, scipy's FFT plan and shader compilation all land on the first
+    # call and can cost hundreds of ms. Including them makes the reported percentile
+    # depend on --frames rather than on the pipeline, so warmup is excluded from the
+    # steady-state budget and reported on its own line.
+    warm = min(args.warmup, len(stage_ms["total"]) - 1)
+    cold = stage_ms["total"][:warm]
+    steady = {k: v[warm:] for k, v in stage_ms.items()}
+
     print(f"\n{'═' * 52}")
-    print("  Latency budget (camera → audio buffer)")
+    print(f"  Latency budget (camera → audio buffer), {warm} warmup frame(s) excluded")
     for stage in ["sim", "bev", "shadow", "orchestrator", "audio"]:
-        v = stage_ms[stage]
+        v = steady[stage]
         print(f"    {stage:14s} p50={np.percentile(v, 50):6.2f}ms  p95={np.percentile(v, 95):6.2f}ms")
-    total = stage_ms["total"]
+    total = steady["total"]
     p50, p95 = np.percentile(total, 50), np.percentile(total, 95)
     print(f"    {'TOTAL':14s} p50={p50:6.2f}ms  p95={p95:6.2f}ms  max={max(total):6.2f}ms")
+    if cold:
+        print(f"    {'(warmup)':14s} first-frame cost {max(cold):.0f}ms — one-off, not steady state")
 
     n = len(total)
-    shadow_hz = 1000.0 / max(np.percentile(stage_ms["shadow"], 50), 1e-6)
-    print(f"\n  frames={n}  stop-overrides={n_stop}  shadow-ray throughput={shadow_hz:.0f} Hz")
+    shadow_hz = 1000.0 / max(np.percentile(steady["shadow"], 50), 1e-6)
+    print(f"\n  frames={n} scored ({warm} warmup)  stop-overrides={n_stop}  "
+          f"shadow-ray throughput={shadow_hz:.0f} Hz")
     checks = [
         ("full pipeline latency < 100ms", p95 < 100),
         ("shadow-ray throughput >= 15Hz", shadow_hz >= 15),
