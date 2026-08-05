@@ -48,36 +48,62 @@ the audio engine silently degrades to amplitude panning.
 
 ## 3. Setup
 
+Either environment works. **venv is usually the better fit on HPC** — the cluster
+already provides a Python module, PyTorch's pip wheels ship their own CUDA runtime, and
+there is no conda install to manage. Conda is only genuinely needed if you want its
+`mesalib` for the *osmesa* software-rendering fallback; EGL on a GPU node comes from the
+NVIDIA driver, not from the Python environment.
+
+### Option A — venv (recommended)
+
 ```bash
-# 1. clone / cd, then create the env
-conda env create -f environment.yml          # name: shadowweave
+module load python/3.11          # whatever your cluster provides; needs >= 3.10
+./scripts/setup_venv.sh          # detects driver CUDA, picks the matching wheel index
+source .venv/bin/activate
+```
+
+The script reads `nvidia-smi` and selects `cu124` / `cu121` / `cu118` accordingly. A
+wheel newer than the driver supports is the usual cause of a silent
+`cuda_available=False` on an otherwise healthy node. Override if you know better:
+
+```bash
+SW_CUDA=cu121 ./scripts/setup_venv.sh
+SW_VENV=/scratch/$USER/venv ./scripts/setup_venv.sh    # keep it off a small $HOME
+```
+
+**Run it on a GPU node, not the login node** — on a login node there is no `nvidia-smi`,
+so it falls back to CPU wheels and every job afterwards runs on CPU.
+
+### Option B — conda
+
+```bash
+conda env create -f environment.yml       # name: shadowweave
 conda activate shadowweave
 pip install -e ".[sim,viz,audio,depth,dev,usd]"
-
-# 2. point the SLURM scripts at your cluster (edit once)
-$EDITOR slurm/env.sh
 ```
 
-`slurm/env.sh` is sourced by every job. The two lines that usually need changing:
+### Either way
 
 ```bash
-SW_ENV="${SW_ENV:-shadowweave}"          # conda env name
-SW_CUDA_MODULE="${SW_CUDA_MODULE:-cuda/12.4}"   # `module avail cuda` to check
-```
-
-Everything else is overridable per-submission without editing files — see §7.
-
-**Verify before queuing anything long:**
-
-```bash
+$EDITOR slurm/env.sh                      # point at your cluster, once
 srun --gres=gpu:1 --pty python slurm/preflight.py
 ```
 
-It must report CUDA available, AMP working, and MuJoCo returning a non-empty depth
-buffer. If depth rendering fails, set `SW_MUJOCO_GL=osmesa` (software, slower but
-portable) and re-run.
+`slurm/env.sh` picks the environment up automatically: it uses `./.venv` if present (or
+`$SW_VENV`), otherwise conda. The lines that usually need changing:
 
----
+```bash
+SW_PYTHON_MODULE="${SW_PYTHON_MODULE:-}"          # e.g. python/3.11
+SW_CUDA_MODULE="${SW_CUDA_MODULE:-cuda/12.4}"     # `module avail cuda` to check
+SW_ENV="${SW_ENV:-shadowweave}"                   # conda env name, if using conda
+```
+
+If the venv lives outside the repo, export `SW_VENV` before every `sbatch` (or set it in
+`env.sh`).
+
+Preflight must report CUDA available, AMP working, and a non-empty MuJoCo depth buffer.
+If depth rendering fails, set `SW_MUJOCO_GL=osmesa` and re-run — that path is software
+rendering and is the one case where conda's `mesalib` genuinely helps.
 
 ## 4. Storage — check this before generating data
 
