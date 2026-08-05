@@ -20,7 +20,7 @@ from shadowweave.utils import (
     save_checkpoint,
 )
 from shadowweave.world_model.dataset import RolloutDataset
-from shadowweave.world_model.diffusion import build_world_model
+from shadowweave.world_model import build_world_model
 
 
 class TestDataset:
