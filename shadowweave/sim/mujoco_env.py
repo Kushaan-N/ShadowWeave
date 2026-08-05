@@ -45,7 +45,7 @@ except ImportError:
 
 _ROOM_XML_TEMPLATE = textwrap.dedent("""
 <mujoco model="shadowweave_room">
-  <option timestep="0.01" gravity="0 0 -9.81"/>
+  <option timestep="{timestep}" gravity="0 0 -9.81"/>
   <visual>
     <map fogstart="3" fogend="10" znear="0.02" zfar="{zfar}"/>
   </visual>
@@ -199,6 +199,10 @@ class ShadowWeaveEnv:
         obj_xml = builders[difficulty](self._rng)
 
         xml = _ROOM_XML_TEMPLATE.format(
+            # One env step must advance exactly 1/fps of simulated time, or every
+            # "k second" horizon label (and the falling-object lead time) is off by
+            # the mismatch — 0.01 hardcoded here meant 30 steps = 0.9s, not 1s.
+            timestep=1.0 / (self.cfg.sim.fps * self.cfg.sim.substeps),
             camera_height=self.cfg.sim.camera_height,
             fov=self.cfg.sim.camera_fov,
             zfar=max(self.cfg.shadow.max_range_m * 2.0, 20.0),
@@ -236,10 +240,11 @@ class ShadowWeaveEnv:
             return self._dummy_obs()
         if action is not None:
             self._move_agent(action)
-        for _ in range(n_substeps if n_substeps is not None else self.cfg.sim.substeps):
+        substeps = n_substeps if n_substeps is not None else self.cfg.sim.substeps
+        for _ in range(substeps):
             mujoco.mj_step(self._model, self._data)
         self._frame += 1
-        self._update_scripted_bodies()
+        self._update_scripted_bodies(substeps)
         # Physics moved bodies; re-pin the kinematically driven agent.
         self._apply_agent_pose()
         return self._render_obs()
@@ -314,9 +319,12 @@ class ShadowWeaveEnv:
                 "drop_z": float(self._rng.uniform(2.5, 4.0)),
             })
 
-    def _update_scripted_bodies(self) -> None:
+    def _update_scripted_bodies(self, n_substeps: Optional[int] = None) -> None:
         """Drive movers and hold un-released debris. Called after every mj_step."""
-        dt = self.cfg.sim.substeps * float(self._model.opt.timestep)
+        # Advance by the substeps actually simulated this frame, or a caller
+        # passing n_substeps desynchronises the scripted bodies from the physics.
+        substeps = n_substeps if n_substeps is not None else self.cfg.sim.substeps
+        dt = substeps * float(self._model.opt.timestep)
         half = self.cfg.sim.room_size / 2.0 - 0.35
 
         for m in self._movers:
@@ -358,7 +366,15 @@ class ShadowWeaveEnv:
 
     def _move_agent(self, action: np.ndarray) -> None:
         """Apply (forward, strafe, turn) action in [-1,1] to agent pose."""
-        a = np.clip(np.asarray(action, dtype=np.float32).ravel(), -1.0, 1.0)
+        a = np.asarray(action, dtype=np.float32).ravel()
+        if a.size != 3:
+            raise ValueError(f"action must be (forward, strafe, turn), got {a.size} values")
+        if not np.isfinite(a).all():
+            # np.clip propagates NaN, and a NaN pose then reads as "no obstacles
+            # anywhere, clearance inf, no collision" — a diverged policy would
+            # silently poison every rollout it touches. Fail loudly instead.
+            raise ValueError(f"non-finite action {a} — policy has diverged")
+        a = np.clip(a, -1.0, 1.0)
         speed = self.cfg.sim.agent_max_speed
         turn = self.cfg.sim.agent_max_turn_rate
         vfwd, vstrafe, d_yaw = float(a[0]) * speed, float(a[1]) * speed, float(a[2]) * turn
