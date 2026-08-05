@@ -73,6 +73,10 @@ agents:
     ppo_clip: 0.2
     ppo_n_envs: 8
     ppo_n_steps: 512
+    # "spawn" — a forked worker inherits MuJoCo's GL context and torch device state
+    # and dies with an unexplained EOFError. Each worker rebuilds the world model, so
+    # expect roughly (model size x ppo_n_envs) of extra RSS.
+    ppo_start_method: "spawn"
     reward_collision_weight: -10.0
     reward_efficiency_weight: 1.0
     reward_progress_weight: 5.0
