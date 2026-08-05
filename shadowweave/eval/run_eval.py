@@ -58,6 +58,7 @@ def run_eval(
     model_ckpt: str,
     n_episodes: int = 30,
     policy_ckpt: str | None = None,
+    allow_random_weights: bool = False,
 ) -> dict[str, float]:
     device = get_device()
     seed_everything(cfg.seed)
@@ -74,9 +75,16 @@ def run_eval(
         world_model.load_state_dict(load_checkpoint(ckpt_path, map_location=device)["model"])
         print(f"Loaded world model from {ckpt_path} "
               f"(base_channels={wm_cfg.world_model.base_channels})")
-    else:
+    elif allow_random_weights:
         print(f"[WARNING] checkpoint not found at {ckpt_path} — using random weights")
         world_model = build_world_model(cfg).to(device)
+    else:
+        # A typo'd path must not produce a complete, plausible-looking eval of
+        # random weights whose only tell is one warning line in a batch log.
+        raise SystemExit(
+            f"checkpoint not found at {ckpt_path} — fix the path, or pass "
+            "--allow-random-weights to evaluate an untrained model deliberately"
+        )
     world_model.eval()
 
     local_agent = LocalAgent(cfg).to(device).eval()
@@ -158,7 +166,7 @@ def run_eval(
                         ).unsqueeze(0)
                         for hi in ready:
                             pred_t = torch.from_numpy(probs[hi]).unsqueeze(0)
-                            metrics.log_prediction(pred_t, truth, p_shadow)
+                            metrics.log_prediction(pred_t, truth, p_shadow, horizon_idx=hi)
                             # Persistence is judged on what was visible when this
                             # prediction was made, not on the present frame.
                             baselines.log(hi, probs[hi], truth, p_shadow, observed_at_issue=p_obs)
@@ -222,10 +230,13 @@ def main() -> None:
     ap.add_argument("--policy", type=str, default=None)
     ap.add_argument("--episodes", type=int, default=9)
     ap.add_argument("--overrides", nargs="*", default=[])
+    ap.add_argument("--allow-random-weights", action="store_true",
+                    help="evaluate an untrained world model instead of failing on a missing checkpoint")
     args = ap.parse_args()
 
     cfg = load_config(overrides=args.overrides)
-    run_eval(cfg, args.ckpt, n_episodes=args.episodes, policy_ckpt=args.policy)
+    run_eval(cfg, args.ckpt, n_episodes=args.episodes, policy_ckpt=args.policy,
+             allow_random_weights=args.allow_random_weights)
 
 
 if __name__ == "__main__":
