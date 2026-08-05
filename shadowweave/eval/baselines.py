@@ -184,6 +184,44 @@ class LeadTimeTracker:
         return out
 
 
+def shadow_diversity(
+    sample_std: torch.Tensor, shadow_mask: torch.Tensor
+) -> dict[str, float]:
+    """Where does a generative world model disagree with itself?
+
+    This is the measurable form of the project's central claim. A model that has
+    learned what occlusion *means* should produce samples that agree on the cells the
+    agent can see and diverge on the cells it cannot. The ratio is the headline: > 1
+    means uncertainty is concentrated in shadow, ~1 means the samples are just noisy
+    everywhere and the model has not tied its uncertainty to visibility.
+
+    A deterministic model cannot be scored on this at all — its std is identically 0,
+    which is precisely the limitation that motivates sampling.
+
+    Args:
+        sample_std:  (..., S, S) per-cell std across samples
+        shadow_mask: (..., S, S) bool, True where unobserved
+    """
+    std = sample_std.detach().float()
+    mask = shadow_mask.detach().bool()
+    # The mask is per-cell (1, S, S) while std carries a horizon axis (T, S, S).
+    # Comparing ndim alone misses that — both are 3-D — so compare full shapes.
+    if mask.shape != std.shape:
+        mask = mask.expand_as(std)
+
+    in_shadow = std[mask]
+    observed = std[~mask]
+    if in_shadow.numel() == 0 or observed.numel() == 0:
+        return {}
+
+    s, o = float(in_shadow.mean()), float(observed.mean())
+    return {
+        "sample_std_shadow": s,
+        "sample_std_observed": o,
+        "shadow_diversity_ratio": s / max(o, 1e-6),
+    }
+
+
 def calibration_error(probs: torch.Tensor, truth: torch.Tensor, n_bins: int = 10) -> float:
     """Expected calibration error.
 
