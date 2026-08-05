@@ -146,7 +146,7 @@ class TestCorruptInputsFailClearly:
 
     def test_truncated_checkpoint_raises(self, cfg, tmp_path):
         from shadowweave.utils import load_checkpoint, save_checkpoint
-        from shadowweave.world_model.diffusion import build_world_model
+        from shadowweave.world_model import build_world_model
 
         p = tmp_path / "c.pt"
         save_checkpoint(p, build_world_model(cfg), cfg, epoch=1)
@@ -167,7 +167,7 @@ class TestEdgeConfigsBuild:
         {"world_model.base_channels": 4},
     ])
     def test_model_builds_and_runs(self, cfg, overrides):
-        from shadowweave.world_model.diffusion import build_world_model
+        from shadowweave.world_model import build_world_model
 
         cfg = cfg.copy()
         for k, v in overrides.items():
