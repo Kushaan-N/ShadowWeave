@@ -134,18 +134,25 @@ def main() -> int:
         counts = {}
         for split in ("train", "val"):
             files = sorted((root / split).glob("*.npz"))
-            if not files:
-                raise RuntimeError(f"no rollouts in {root / split} — run slurm/gen_data.sbatch")
-            with np.load(files[0]) as d:
-                if "bev_occupancy" not in d:
-                    raise RuntimeError(
-                        f"{root / split} holds pre-BEV rollouts {sorted(d.files)}; "
-                        "delete and regenerate"
-                    )
+            # Every file, not files[0]: fresh 6-digit and stale 5-digit episodes
+            # coexist after a regeneration, and either sort order can hide the
+            # other. np.load only reads the zip directory, so this is cheap.
+            for f in files:
+                with np.load(f) as d:
+                    if "bev_occupancy" not in d:
+                        raise RuntimeError(
+                            f"{f} uses the pre-BEV schema {sorted(d.files)} — "
+                            "delete the stale rollouts and regenerate "
+                            "(slurm/gen_data.sbatch or ./slurm/pipeline.sh)"
+                        )
             counts[split] = len(files)
+        if not counts["train"] and not counts["val"]:
+            return "none yet — gen_data will create them"
         return f"train={counts['train']} val={counts['val']} episodes"
 
-    check("rollout data", data_check, fatal=False)
+    # Stale/degenerate data must block submission, not warn: a green preflight
+    # followed by a stage-2 crash costs the whole gen_data allocation.
+    check("rollout data", data_check)
 
     def ckpt_check():
         from shadowweave.utils import config_from_checkpoint, load_checkpoint, load_config
@@ -154,13 +161,20 @@ def main() -> int:
         cfg = load_config()
         p = pathlib.Path(cfg.world_model.checkpoint_dir) / "best.pt"
         if not p.exists():
-            raise RuntimeError(f"no checkpoint at {p} (fine before the first run)")
-        wm_cfg = config_from_checkpoint(p, cfg)
-        model = build_world_model(wm_cfg)
-        model.load_state_dict(load_checkpoint(p)["model"])
+            return f"none at {p} (fine before the first run)"
+        try:
+            wm_cfg = config_from_checkpoint(p, cfg)
+            model = build_world_model(wm_cfg)
+            model.load_state_dict(load_checkpoint(p)["model"])
+        except Exception as e:
+            raise RuntimeError(
+                f"{p} exists but cannot be loaded ({type(e).__name__}) — a stale "
+                "checkpoint here silently degrades RL/eval to random weights; "
+                "delete it or retrain"
+            ) from e
         return f"loads with base_channels={wm_cfg.world_model.base_channels}"
 
-    check("world model checkpoint", ckpt_check, fatal=False)
+    check("world model checkpoint", ckpt_check)
 
     print()
     if _failures:
