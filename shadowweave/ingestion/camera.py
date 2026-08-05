@@ -26,10 +26,18 @@ class Camera:
         if self.source == "webcam":
             try:
                 import cv2
-                self._cap = cv2.VideoCapture(0)
-                self._cap.set(cv2.CAP_PROP_FPS, self.cfg.sim.fps)
             except ImportError:
                 raise ImportError("cv2 required for webcam source — pip install opencv-python")
+            self._cap = cv2.VideoCapture(0)
+            if not self._cap.isOpened():
+                # Without this check open() "succeeds" headless and the failure
+                # surfaces later as a misleading "call open() first".
+                self._cap.release()
+                self._cap = None
+                raise RuntimeError(
+                    "could not open webcam 0 — no camera attached or permission denied"
+                )
+            self._cap.set(cv2.CAP_PROP_FPS, self.cfg.sim.fps)
         # sim source is driven externally; no handle needed
 
     def close(self) -> None:
