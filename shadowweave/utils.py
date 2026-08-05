@@ -35,6 +35,20 @@ def supports_grid_sample_3d(device: torch.device) -> bool:
     return device.type != "mps"
 
 
+def sanitize_depth(depth: torch.Tensor) -> torch.Tensor:
+    """Clamp depth to [0, 1] and replace non-finite values with 0.0.
+
+    A single NaN from a flaky sensor or a monocular depth model otherwise propagates
+    straight through the raycaster into the uncertainty grid and out to the audio the
+    user is navigating by, with nothing signalling that the frame was bad.
+
+    Non-finite maps to 0.0 — "something is right in front of me" — because that reads
+    as maximum uncertainty and trips the orchestrator's stop override. Mapping it to
+    1.0 ("clear ahead") would be the unsafe direction to fail in.
+    """
+    return torch.nan_to_num(depth, nan=0.0, posinf=0.0, neginf=0.0).clamp(0.0, 1.0)
+
+
 def load_config(path: Optional[str] = None, overrides: Optional[list[str]] = None) -> DictConfig:
     """Load default.yaml, then apply ``key=value`` dotlist overrides from the CLI."""
     cfg = OmegaConf.load(path or _CONFIG_PATH)
