@@ -33,6 +33,7 @@ DEMO_MODULES = [
     "shadowweave.audio.hrtf",
     "shadowweave.eval.metrics",
     "shadowweave.eval.baselines",
+    "shadowweave.sim.usd_export",
     "shadowweave.ingestion.camera",
 ]
 
