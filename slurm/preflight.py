@@ -156,7 +156,7 @@ def main() -> int:
 
     def ckpt_check():
         from shadowweave.utils import config_from_checkpoint, load_checkpoint, load_config
-        from shadowweave.world_model.diffusion import build_world_model
+        from shadowweave.world_model import build_world_model
 
         cfg = load_config()
         p = pathlib.Path(cfg.world_model.checkpoint_dir) / "best.pt"
