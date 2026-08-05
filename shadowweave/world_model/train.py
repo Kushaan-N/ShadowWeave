@@ -38,7 +38,7 @@ from ..utils import (
     seed_everything,
 )
 from .dataset import RolloutDataset
-from .diffusion import build_world_model
+from .unet import build_world_model
 
 
 def _dist_info() -> tuple[int, int, int]:
@@ -241,18 +241,9 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
                 g["lr"] = lr
 
             with torch.autocast("cuda", enabled=use_amp):
-                logits = model(x)
-                bce = F.binary_cross_entropy_with_logits(logits, y, pos_weight=pos_weight)
-                # Physics consistency: occupancy should evolve smoothly between
-                # consecutive horizons, so penalise abrupt jumps along the T axis.
-                probs = torch.sigmoid(logits)
-                if probs.shape[1] > 1:
-                    physics_reg = (probs[:, 1:] - probs[:, :-1]).abs().mean()
-                else:
-                    # mean() of the empty slice is NaN, and NaN + bce poisons the
-                    # reported loss for the whole run when only one horizon is set.
-                    physics_reg = probs.new_zeros(())
-                loss = cfg.world_model.bce_weight * bce + cfg.world_model.physics_reg_weight * physics_reg
+                # Each architecture owns its objective: weighted BCE + horizon
+                # smoothness for the U-Net, epsilon-MSE for the diffusion model.
+                loss = unwrap_model(model).loss(x, y)
 
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
@@ -285,11 +276,11 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
                 x = batch["input"].to(device, non_blocking=True)
                 y = batch["target"].to(device, non_blocking=True)
                 with torch.autocast("cuda", enabled=use_amp):
-                    logits = model(x)
-                    val_loss += F.binary_cross_entropy_with_logits(
-                        logits, y, pos_weight=pos_weight
-                    ).item()
-                iou_sum += iou(torch.sigmoid(logits.float()), y).sum(dim=0)
+                    val_loss += float(raw.loss(x, y))
+                # IOU comes from predict(), not from raw logits: for the diffusion
+                # model those two differ (sampling vs a sigmoid), and IOU is the
+                # number the checkpoint is selected on.
+                iou_sum += iou(raw.predict(x).float(), y).sum(dim=0)
                 n_val += x.shape[0]
         val_loss /= max(len(val_dl), 1)
         ious = (iou_sum / max(n_val, 1)).cpu()
