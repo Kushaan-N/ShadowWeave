@@ -40,7 +40,7 @@ preflight:
 demos:
 	@for m in shadowweave.shadow.raycast shadowweave.shadow.bev shadowweave.shadow.occupancy \
 	          shadowweave.shadow.zones shadowweave.shadow.visualizer \
-	          shadowweave.world_model.diffusion shadowweave.world_model.dataset \
+	          shadowweave.world_model.unet shadowweave.world_model.ddpm shadowweave.world_model.dataset \
 	          shadowweave.agents.local_agent shadowweave.agents.global_agent \
 	          shadowweave.agents.orchestrator shadowweave.audio.cues shadowweave.audio.hrtf \
 	          shadowweave.eval.metrics shadowweave.sim.mujoco_env; do \
