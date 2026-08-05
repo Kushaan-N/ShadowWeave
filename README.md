@@ -20,9 +20,8 @@ is uncertainty propagation through unobserved space.
 ## Quick start
 
 ```bash
-conda env create -f environment.yml     # or: pip install -r requirements.txt
-conda activate shadowweave
-pip install -e .
+./scripts/setup_venv.sh && source .venv/bin/activate   # venv (recommended on HPC)
+# or: conda env create -f environment.yml && conda activate shadowweave && pip install -e .
 
 make smoke                              # end-to-end smoke test, no training needed
 make bench                              # size batch/workers before booking GPU time
