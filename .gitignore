@@ -1,5 +1,8 @@
 # data & checkpoints — too large for git
-data/
+# (data/* rather than data/ so the KEMAR exception below can apply — git does
+# not descend into fully-ignored directories)
+data/*
+!data/kemar/
 checkpoints/
 
 # Python

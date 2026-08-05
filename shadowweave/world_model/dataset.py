@@ -75,10 +75,30 @@ class RolloutDataset(Dataset):
         for fi, f in enumerate(self.files):
             stem = self.cache_dir / f.stem
             marker = stem.with_suffix(".ok")
-            if marker.exists():
+            # The marker is only valid if it postdates the npz: episode filenames
+            # are deterministic (ep{seed:06d}), so a regeneration overwrites the
+            # npz in place and a filename-keyed cache would silently keep serving
+            # the old arrays.
+            if marker.exists() and marker.stat().st_mtime >= f.stat().st_mtime:
                 self._lengths.append(int(np.load(str(stem) + "__len.npy")))
                 continue
-            with np.load(f) as data:
+            # Rebuilding: clear stale sidecars first — _atomic_save keeps the first
+            # writer's file (which is what makes concurrent DDP ranks safe, so that
+            # stays), and would otherwise preserve the outdated arrays.
+            marker.unlink(missing_ok=True)
+            for old in self.cache_dir.glob(f"{f.stem}__*.npy"):
+                old.unlink(missing_ok=True)
+            try:
+                data = np.load(f)
+            except Exception as e:
+                # numpy's own message ("contains pickled data") is misleading for a
+                # rollout truncated by a killed job or an out-of-quota filesystem.
+                raise ValueError(
+                    f"{f} is not a readable .npz ({type(e).__name__}). It was likely "
+                    f"written by an interrupted generation job — delete it and "
+                    f"regenerate that shard."
+                ) from e
+            with data:
                 if "bev_occupancy" not in data:
                     raise ValueError(
                         f"{f} uses the pre-BEV schema {sorted(data.files)}.\n"

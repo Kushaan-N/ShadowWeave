@@ -2,6 +2,10 @@
 
 from __future__ import annotations
 
+# Before torch: shadowweave.__init__ sets PYTORCH_ENABLE_MPS_FALLBACK, which torch
+# reads once at import — set afterwards it does nothing.
+import shadowweave  # noqa: F401
+
 import numpy as np
 import pytest
 import torch

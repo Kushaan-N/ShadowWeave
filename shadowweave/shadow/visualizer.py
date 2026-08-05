@@ -27,7 +27,14 @@ class ShadowVisualizer:
 
     def __init__(self, cfg: DictConfig) -> None:
         self.cfg = cfg
-        self.n_zones = cfg.shadow.grid_cells
+        self.n_zones = int(cfg.shadow.grid_cells)
+        if self.n_zones != len(ZONE_LABELS):
+            # The label list (and the 9-zone audio mapping) is fixed; a larger
+            # grid_cells used to die later with a bare IndexError in hover text.
+            raise ValueError(
+                f"visualizer supports exactly {len(ZONE_LABELS)} zones, "
+                f"got shadow.grid_cells={self.n_zones}"
+            )
         self.fov = float(cfg.sim.camera_fov)
 
     def update(self, uncertainty_grid: np.ndarray) -> "object":
@@ -35,6 +42,11 @@ class ShadowVisualizer:
             import plotly.graph_objects as go
         except ImportError:
             raise ImportError("plotly required — pip install plotly")
+
+        if np.asarray(uncertainty_grid).size != self.n_zones:
+            raise ValueError(
+                f"expected a {self.n_zones}-zone grid, got size {np.asarray(uncertainty_grid).size}"
+            )
 
         u = np.asarray(uncertainty_grid, dtype=np.float32).ravel()
         n = self.n_zones

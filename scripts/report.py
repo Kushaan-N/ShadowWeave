@@ -154,11 +154,20 @@ def render_compare(paths: list[str], cfg) -> str:
     for p in paths:
         runs.append((pathlib.Path(p).stem, json.loads(pathlib.Path(p).read_text())))
     keys = sorted({k for _, s in runs for k in s})
+    # Direction-aware "best": highlighting max() unconditionally paints the WORSE
+    # run green for every lower-is-better metric (latency, collisions, ...).
+    lower_better_keys = {key for _, key, _, cmp in TARGETS if cmp == "le"}
+    lower_better_terms = ("latency", "collision", "calibration", "false_alarm", "loss")
+
+    def _lower_is_better(key: str) -> bool:
+        return key in lower_better_keys or any(t in key for t in lower_better_terms)
+
     rows = []
     for k in keys:
         row = [k]
         vals = [s.get(k) for _, s in runs]
-        best = max((v for v in vals if v is not None), default=None)
+        pick = min if _lower_is_better(k) else max
+        best = pick((v for v in vals if v is not None), default=None)
         for v in vals:
             if v is None:
                 row.append("  –  ")

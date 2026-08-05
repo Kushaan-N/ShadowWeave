@@ -30,6 +30,8 @@ import torch.nn as nn
 import torch.nn.functional as F
 from omegaconf import DictConfig
 
+from ..utils import sanitize_depth
+
 
 class BEVProjector(nn.Module):
     """Depth map → egocentric BEV occupancy and visibility.
@@ -77,6 +79,7 @@ class BEVProjector(nn.Module):
 
     def hit_range(self, depth_map: torch.Tensor) -> torch.Tensor:
         """(B, 1, H, W) → (B, S, S) metric distance to the first surface per bearing."""
+        depth_map = sanitize_depth(depth_map)
         B = depth_map.shape[0]
         S, E = self.size, self.n_elev
 

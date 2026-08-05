@@ -18,6 +18,10 @@ from __future__ import annotations
 import argparse
 import pathlib
 
+# Before torch: shadowweave.__init__ sets PYTORCH_ENABLE_MPS_FALLBACK, which torch
+# reads once at import — set afterwards it does nothing.
+import shadowweave  # noqa: F401
+
 import numpy as np
 import torch
 from omegaconf import DictConfig
@@ -45,9 +49,19 @@ def load_world_model(cfg: DictConfig, device: torch.device):
     wall of size-mismatch errors.
     """
     ckpt = pathlib.Path(cfg.world_model.checkpoint_dir) / "best.pt"
+    allow_random = bool(cfg.agents.local.get("allow_random_world_model", False))
     if not ckpt.exists():
-        print(f"WARNING: no checkpoint at {ckpt} — world model using random weights")
-        return build_world_model(cfg).to(device).eval()
+        if allow_random:
+            print(f"WARNING: no checkpoint at {ckpt} — world model using random weights")
+            return build_world_model(cfg).to(device).eval()
+        # 36 of the 45 observation dims come from the world model; training PPO
+        # against random weights burns the whole allocation on noise. One warning
+        # line in an 8-hour batch log is not enough signal for that.
+        raise SystemExit(
+            f"no world model checkpoint at {ckpt} — train it first "
+            "(slurm/train_worldmodel.sbatch), or set "
+            "agents.local.allow_random_world_model=true to proceed deliberately"
+        )
 
     wm_cfg = config_from_checkpoint(ckpt, cfg)
     model = build_world_model(wm_cfg).to(device)
@@ -55,6 +69,12 @@ def load_world_model(cfg: DictConfig, device: torch.device):
         model.load_state_dict(load_checkpoint(ckpt, map_location=device)["model"])
         print(f"Loaded world model from {ckpt} (base_channels={wm_cfg.world_model.base_channels})")
     except RuntimeError as e:
+        if not allow_random:
+            raise SystemExit(
+                f"checkpoint at {ckpt} is incompatible with the current architecture "
+                f"({str(e)[:200]}) — retrain it, or set "
+                "agents.local.allow_random_world_model=true to proceed deliberately"
+            ) from e
         print(f"WARNING: checkpoint incompatible ({str(e)[:120]}) — using random weights")
     return model.eval()
 
@@ -163,12 +183,28 @@ def train_ppo(cfg: DictConfig, n_steps: int = 1_000_000) -> None:
 
     env_cls = make_env_class(cfg, device)
     n_envs = int(cfg.agents.local.ppo_n_envs)
-    # MuJoCo renderers hold a GL context each; subprocesses keep them isolated.
-    vec_cls = SubprocVecEnv if n_envs > 1 else DummyVecEnv
-    venv = vec_cls([(lambda i=i: env_cls(rank=i)) for i in range(n_envs)])
+    env_fns = [(lambda i=i: env_cls(rank=i)) for i in range(n_envs)]
+
+    if n_envs > 1:
+        # MuJoCo renderers hold a GL context and torch holds device state; neither
+        # survives a fork, and the workers die with a bare EOFError in the parent
+        # that says nothing about the cause. Spawn gives each worker a clean
+        # interpreter. Verified: fork fails here, spawn succeeds.
+        venv = SubprocVecEnv(env_fns, start_method=cfg.agents.local.ppo_start_method)
+    else:
+        venv = DummyVecEnv(env_fns)
 
     ckpt_dir = pathlib.Path(cfg.agents.local.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
+
+    # tensorboard is optional; SB3 raises outright if it is missing, which should not
+    # be enough to kill a training run that is otherwise ready to go.
+    try:
+        import tensorboard  # noqa: F401
+        tb_log = str(ckpt_dir / "tb")
+    except ImportError:
+        tb_log = None
+        print("tensorboard not installed — skipping TB logging (pip install tensorboard)")
 
     model = PPO(
         "MlpPolicy",
@@ -178,7 +214,7 @@ def train_ppo(cfg: DictConfig, n_steps: int = 1_000_000) -> None:
         clip_range=cfg.agents.local.ppo_clip,
         n_steps=cfg.agents.local.ppo_n_steps,
         policy_kwargs=dict(net_arch=[cfg.agents.local.hidden_dim] * cfg.agents.local.num_layers),
-        tensorboard_log=str(ckpt_dir / "tb"),
+        tensorboard_log=tb_log,
         verbose=1,
         seed=cfg.seed,
         device=str(device),

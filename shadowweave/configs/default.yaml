@@ -73,6 +73,11 @@ agents:
     ppo_clip: 0.2
     ppo_n_envs: 8
     ppo_n_steps: 512
+    # "spawn" — a forked worker inherits MuJoCo's GL context and torch device state
+    # and dies with an unexplained EOFError. Each worker rebuilds the world model, so
+    # expect roughly (model size x ppo_n_envs) of extra RSS.
+    ppo_start_method: "spawn"
+    allow_random_world_model: false  # true = deliberately train/eval against an untrained world model
     reward_collision_weight: -10.0
     reward_efficiency_weight: 1.0
     reward_progress_weight: 5.0
@@ -87,6 +92,7 @@ agents:
     astar_obstacle_cost: 10.0   # multiplier on occupancy when scoring a cell
     astar_shadow_cost: 2.0      # extra cost for routing through unobserved space
     astar_allow_diagonal: true
+    astar_block_threshold: 0.9  # occupancy at/above this is impassable, not just expensive
 
   orchestrator:
     uncertainty_stop_threshold: 0.85
@@ -111,6 +117,7 @@ audio:
   min_intensity: 0.0
   max_intensity: 1.0
   cue_threshold: 0.1      # below this a zone stays silent (absence of cue = safe)
+  falling_min_intensity: 0.6  # floor for falling-object cues — a visible (low-uncertainty) falling hazard must still be loud
   master_gain: 0.5
 
 optical_flow:
@@ -134,4 +141,5 @@ eval:
 wandb:
   project: "shadowweave"
   entity: null            # set to your wandb username
-  mode: "online"          # online | offline | disabled
+  mode: "offline"         # online | offline | disabled — offline records runs even on
+                          # keyless/firewalled compute nodes; `wandb sync wandb/` after

@@ -95,7 +95,9 @@ def build_dashboard(cfg: DictConfig, state: DashboardState) -> "object":
     def get_status():
         s = state.snapshot()
         flag = "⛔ STOP — uncertainty above threshold" if s["is_stop"] else "✅ Navigating"
-        return f"{flag}   |   pipeline {s['fps']:.1f} Hz   |   max zone {s['uncertainty'].max():.3f}"
+        u = np.asarray(s["uncertainty"])
+        max_u = float(u.max()) if u.size else 0.0  # .max() on empty raises
+        return f"{flag}   |   pipeline {s['fps']:.1f} Hz   |   max zone {max_u:.3f}"
 
     # Gradio 6 moved `theme` from the Blocks constructor to launch().
     with gr.Blocks(title="ShadowWeave") as demo:

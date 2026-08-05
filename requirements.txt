@@ -12,6 +12,9 @@ Pillow>=10.0.0
 # Physics sim
 mujoco>=3.0.0
 
+# Webcam ingestion (ingestion/camera.py source="webcam")
+opencv-python>=4.8.0
+
 # RL training
 stable-baselines3>=2.2.0
 gymnasium>=0.29.0
