@@ -15,7 +15,7 @@ from shadowweave.agents.local_agent import LocalAgent, compute_reward, observati
 from shadowweave.agents.orchestrator import Orchestrator
 from shadowweave.audio.cues import AUDIO_PARAM_DIM, CueMapper
 from shadowweave.audio.hrtf import HRTFEngine
-from shadowweave.world_model.diffusion import ConvLSTMCell, build_world_model
+from shadowweave.world_model import ConvLSTMCell, build_world_model
 
 
 class TestOrchestratorContract:
