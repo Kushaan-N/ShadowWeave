@@ -47,6 +47,7 @@ class GlobalAgent:
         self.obstacle_cost = float(g.astar_obstacle_cost)
         self.shadow_cost = float(g.astar_shadow_cost)
         self.allow_diagonal = bool(g.astar_allow_diagonal)
+        self.block_threshold = float(g.astar_block_threshold)
 
     def plan(
         self,
@@ -56,16 +57,30 @@ class GlobalAgent:
         shadow: Optional[np.ndarray] = None,
     ) -> list[tuple[int, int]]:
         H, W = occupancy_pred.shape
+        for name, pt in (("start", start), ("goal", goal)):
+            if int(pt[0]) != pt[0] or int(pt[1]) != pt[1]:
+                raise ValueError(f"{name} must be integer grid coordinates, got {pt}")
+        start = (int(start[0]), int(start[1]))
+        goal = (int(goal[0]), int(goal[1]))
         if not (0 <= start[0] < H and 0 <= start[1] < W):
             return []
         if not (0 <= goal[0] < H and 0 <= goal[1] < W):
             return []
+
+        # A NaN cell means the model broke, not that the cell is free — treat it as
+        # blocked, or A* silently returns [] (NaN fails every < comparison).
+        occ = np.nan_to_num(occupancy_pred, nan=1.0, posinf=1.0, neginf=0.0)
+        blocked = occ >= self.block_threshold
+        if blocked[goal] or blocked[start]:
+            return []  # a goal inside an obstacle has no safe route by definition
         if start == goal:
             return [start]
 
-        cost_map = _STEP_COST + self.obstacle_cost * np.clip(occupancy_pred, 0.0, 1.0)
+        cost_map = _STEP_COST + self.obstacle_cost * np.clip(occ, 0.0, 1.0)
         if shadow is not None:
-            cost_map = cost_map + self.shadow_cost * np.clip(shadow, 0.0, 1.0)
+            cost_map = cost_map + self.shadow_cost * np.nan_to_num(
+                np.clip(shadow, 0.0, 1.0), nan=1.0
+            )
 
         if self.allow_diagonal:
             moves = [(-1, 0), (1, 0), (0, -1), (0, 1), (-1, -1), (-1, 1), (1, -1), (1, 1)]
@@ -101,6 +116,11 @@ class GlobalAgent:
                 nr, nc = r + dr, c + dc
                 if not (0 <= nr < H and 0 <= nc < W) or (nr, nc) in closed:
                     continue
+                # Near-certain obstacles are impassable, not merely expensive — a
+                # finite penalty meant a fully sealed wall still yielded a "path"
+                # straight through it, reported to the caller as safe.
+                if blocked[nr, nc]:
+                    continue
                 # Diagonal steps cover sqrt(2) cells of ground, so they must cost more
                 # or the planner prefers staircases through obstacles.
                 step = math.sqrt(2) if (dr and dc) else 1.0
@@ -113,10 +133,26 @@ class GlobalAgent:
 
         return []  # no path found
 
-    def path_cost(self, occupancy_pred: np.ndarray, path: list[tuple[int, int]]) -> float:
+    def path_cost(
+        self,
+        occupancy_pred: np.ndarray,
+        path: list[tuple[int, int]],
+        shadow: Optional[np.ndarray] = None,
+    ) -> float:
+        """Cost of a path under the same model plan() optimises — including the
+        sqrt(2) diagonal step weight and the shadow penalty, so ranking candidate
+        paths by this value agrees with A*'s own ranking."""
         if not path:
             return float("inf")
-        return float(sum(_STEP_COST + self.obstacle_cost * occupancy_pred[r, c] for r, c in path[1:]))
+        occ = np.nan_to_num(occupancy_pred, nan=1.0, posinf=1.0, neginf=0.0)
+        total = 0.0
+        for (pr, pc), (r, c) in zip(path[:-1], path[1:]):
+            step = math.sqrt(2) if (pr != r and pc != c) else 1.0
+            cell = _STEP_COST + self.obstacle_cost * float(np.clip(occ[r, c], 0.0, 1.0))
+            if shadow is not None:
+                cell += self.shadow_cost * float(np.clip(shadow[r, c], 0.0, 1.0))
+            total += cell * step
+        return float(total)
 
     def _reconstruct(
         self,
