@@ -106,11 +106,27 @@ class Orchestrator:
         wm_pred = np.asarray(wm_pred, dtype=np.float32)
         if wm_pred.ndim != 3:
             raise ValueError(f"wm_pred must be (T, S, S), got shape {wm_pred.shape}")
+        expected_t = len(self.cfg.world_model.prediction_horizons)
+        if wm_pred.shape[0] != expected_t:
+            # A wrong horizon count otherwise surfaces as an opaque matmul-shape
+            # RuntimeError from inside the policy network.
+            raise ValueError(
+                f"wm_pred has {wm_pred.shape[0]} horizons, config declares {expected_t}"
+            )
 
         if falling_mask is None:
             falling_mask = np.zeros(self._n_zones, dtype=bool)
 
-        max_uncertainty = float(uncertainty_grid.max())
+        if not (np.isfinite(uncertainty_grid).all() and np.isfinite(wm_pred).all()):
+            # A dead sensor or diverged model is maximum danger, not "all clear":
+            # NaN > threshold is False, so without this the corrupt frame would
+            # bypass the stop override and steer a blind user on garbage.
+            uncertainty_grid = np.where(
+                np.isfinite(uncertainty_grid), uncertainty_grid, 1.0
+            ).astype(np.float32)
+            max_uncertainty = 1.0
+        else:
+            max_uncertainty = float(uncertainty_grid.max())
         is_stop = max_uncertainty > self._stop_threshold
 
         if is_stop:
