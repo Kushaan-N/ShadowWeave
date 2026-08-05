@@ -41,7 +41,17 @@ bev:
   input_channels: ["occupancy", "visibility", "flow"]  # world model input stack
 
 world_model:
-  architecture: "unet"    # unet | convlstm
+  architecture: "unet"    # unet | convlstm | diffusion
+
+  # Conditional DDPM over future BEV occupancy. Motivation: BCE is mean-seeking, so
+  # the deterministic model hedges into a grey smear exactly where the future is
+  # multimodal — the shadow. Diffusion samples coherent futures instead.
+  diffusion:
+    timesteps: 1000       # training noise steps (cosine schedule)
+    sample_steps: 50      # DDIM steps at inference; the main quality/latency knob
+    ddim_eta: 0.0         # 0 = deterministic DDIM; >0 adds per-step stochasticity
+    predict_samples: 4    # samples averaged by predict() for the posterior mean
+    eval_samples: 8       # samples used for diversity/calibration reporting
   base_channels: 64
   depth_multiplier: 4
   prediction_horizons: [1, 3, 5, 10]  # seconds
