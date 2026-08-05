@@ -37,7 +37,11 @@ class TestOrchestratorContract:
                                    np.random.rand(T, S, S).astype(np.float32))
         assert out.is_stop
         assert not out.nav_action.any(), "must not keep steering during a stop"
-        assert (out.audio_params[1::3] == 1.0).all()
+        # Every zone must sound, but nine coherent same-phase tones sum linearly —
+        # full intensity on all of them hard-clipped 76% of the output into a
+        # square wave, so the per-zone intensity is 1/N_ZONES.
+        assert (out.audio_params[1::3] > 0).all(), "stop pattern must sound in every zone"
+        assert float(out.audio_params[1::3].sum()) <= 1.0 + 1e-6
 
     def test_flattened_prediction_is_rejected(self, cfg):
         """run_eval passed wm_pred.ravel() into a method that indexes (T, S, S)."""
