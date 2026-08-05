@@ -1,5 +1,11 @@
 # Conda environment for ShadowWeave on a CUDA GPU cluster.
 #
+# A plain venv works just as well and is often a better fit on HPC:
+#     ./scripts/setup_venv.sh
+# PyTorch's pip wheels bundle their own CUDA runtime, so the only thing conda
+# uniquely provides below is mesalib, for the osmesa software-rendering
+# fallback. EGL on a GPU node comes from the NVIDIA driver either way.
+#
 #   conda env create -f environment.yml
 #   conda activate shadowweave
 #   pip install -e .
