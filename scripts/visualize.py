@@ -30,7 +30,7 @@ from shadowweave.utils import (  # noqa: E402
     load_config,
 )
 from shadowweave.world_model.dataset import RolloutDataset  # noqa: E402
-from shadowweave.world_model.diffusion import build_world_model  # noqa: E402
+from shadowweave.world_model import build_world_model  # noqa: E402
 
 NEON = [(0.05, 0.01, 0.13), (0.0, 1.0, 0.6), (1.0, 0.0, 1.0)]
 
@@ -55,7 +55,7 @@ def render_samples(cfg, model, ds, device, n: int, out_dir: pathlib.Path) -> lis
         x = sample["input"].unsqueeze(0).to(device)
         y = sample["target"].numpy()
         with torch.no_grad():
-            p = torch.sigmoid(model(x))[0].cpu().numpy()
+            p = model.predict(x)[0].cpu().numpy()
 
         n_cols = len(horizons)
         fig, axes = plt.subplots(4, n_cols, figsize=(2.6 * n_cols, 10.5), facecolor="#0d0221")
