@@ -115,12 +115,12 @@ class TestUnwrapModel:
     into the checkpoint and make it unloadable by a plain model."""
 
     def test_plain_model_is_returned_unchanged(self, cfg):
-        from shadowweave.world_model.diffusion import build_world_model
+        from shadowweave.world_model import build_world_model
         m = build_world_model(cfg)
         assert unwrap_model(m) is m
 
     def test_strips_a_module_wrapper(self, cfg):
-        from shadowweave.world_model.diffusion import build_world_model
+        from shadowweave.world_model import build_world_model
 
         inner = build_world_model(cfg)
 
@@ -132,7 +132,7 @@ class TestUnwrapModel:
         assert unwrap_model(Wrapper(inner)) is inner
 
     def test_strips_nested_wrappers(self, cfg):
-        from shadowweave.world_model.diffusion import build_world_model
+        from shadowweave.world_model import build_world_model
 
         inner = build_world_model(cfg)
 
@@ -149,7 +149,7 @@ class TestUnwrapModel:
         assert unwrap_model(DDPLike(Compiled(inner))) is inner
 
     def test_unwrapped_state_dict_has_no_prefix(self, cfg):
-        from shadowweave.world_model.diffusion import build_world_model
+        from shadowweave.world_model import build_world_model
 
         inner = build_world_model(cfg)
 
@@ -165,7 +165,7 @@ class TestUnwrapModel:
 
 class TestEMACorrectness:
     def test_ema_tracks_then_restores(self, cfg):
-        from shadowweave.world_model.diffusion import build_world_model
+        from shadowweave.world_model import build_world_model
         from shadowweave.world_model.train import EMA
 
         model = build_world_model(cfg)
@@ -186,7 +186,7 @@ class TestEMACorrectness:
             assert torch.equal(model.state_dict()[k], v)
 
     def test_ema_moves_toward_the_weights(self, cfg):
-        from shadowweave.world_model.diffusion import build_world_model
+        from shadowweave.world_model import build_world_model
         from shadowweave.world_model.train import EMA
 
         model = build_world_model(cfg)
