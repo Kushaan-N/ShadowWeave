@@ -36,8 +36,13 @@ from ..utils import (
     load_config,
     seed_everything,
 )
-from ..world_model.diffusion import build_world_model
-from .baselines import BaselineComparison, LeadTimeTracker, calibration_error
+from ..world_model import build_world_model
+from .baselines import (
+    BaselineComparison,
+    LeadTimeTracker,
+    calibration_error,
+    shadow_diversity,
+)
 from .metrics import EvalMetrics
 
 
@@ -98,6 +103,10 @@ def run_eval(
     baselines = BaselineComparison(horizons)
     lead_tracker = LeadTimeTracker()
     ece_samples: list[float] = []
+    diversity_samples: list[dict[str, float]] = []
+    # Only a generative model can be scored on sample disagreement; a
+    # deterministic one has std identically zero.
+    can_sample = hasattr(world_model, "sample_statistics")
     S = cfg.bev.size
     steps = cfg.eval.steps_per_episode
     fps = cfg.sim.fps
@@ -141,7 +150,18 @@ def run_eval(
                     flow = (bev_flow(prev_bev, occ) if prev_bev is not None
                             else torch.zeros(1, 2, S, S, device=device))
                     prev_bev = occ
-                    wm_pred = torch.sigmoid(world_model(_build_stack(cfg, occ, vis, flow)))
+                    # predict() is the architecture-agnostic entry point: sigmoid for
+                    # the U-Net, a sampled posterior mean for the diffusion model.
+                    stack = _build_stack(cfg, occ, vis, flow)
+                    if can_sample:
+                        wm_pred, wm_std = world_model.sample_statistics(
+                            stack, n_samples=cfg.world_model.diffusion.eval_samples
+                        )
+                        d = shadow_diversity(wm_std[0], (vis[0] < 0.5))
+                        if d:
+                            diversity_samples.append(d)
+                    else:
+                        wm_pred = world_model.predict(stack)
 
                 pred_np = wm_pred[0].cpu().numpy()
                 out = orch.step(uncertainty, pred_np)
@@ -203,6 +223,9 @@ def run_eval(
     summary.update(lead_tracker.summary())
     if ece_samples:
         summary["calibration_error"] = float(np.mean(ece_samples))
+    if diversity_samples:
+        for k in diversity_samples[0]:
+            summary[k] = float(np.mean([d[k] for d in diversity_samples]))
 
     results_dir = pathlib.Path(cfg.eval.results_dir)
     results_dir.mkdir(parents=True, exist_ok=True)
