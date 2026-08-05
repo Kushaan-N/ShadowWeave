@@ -78,7 +78,17 @@ class RolloutDataset(Dataset):
             if marker.exists():
                 self._lengths.append(int(np.load(str(stem) + "__len.npy")))
                 continue
-            with np.load(f) as data:
+            try:
+                data = np.load(f)
+            except Exception as e:
+                # numpy's own message ("contains pickled data") is misleading for a
+                # rollout truncated by a killed job or an out-of-quota filesystem.
+                raise ValueError(
+                    f"{f} is not a readable .npz ({type(e).__name__}). It was likely "
+                    f"written by an interrupted generation job — delete it and "
+                    f"regenerate that shard."
+                ) from e
+            with data:
                 if "bev_occupancy" not in data:
                     raise ValueError(
                         f"{f} uses the pre-BEV schema {sorted(data.files)}.\n"
