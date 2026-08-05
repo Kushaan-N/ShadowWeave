@@ -1,4 +1,8 @@
-"""Physics-informed world model — U-Net backbone predicting future BEV occupancy.
+"""Deterministic world model — U-Net backbone predicting future BEV occupancy.
+
+This module was previously named ``diffusion.py``, which it never was: it is a plain
+U-Net trained with BCE, plus a ConvLSTM fallback. The actual denoising diffusion model
+now lives in ``ddpm.py`` and reuses ``CondUNet`` from here as its backbone.
 
 Input is the egocentric BEV stack (observed occupancy, visibility/shadow mask, and
 2-channel BEV flow); output is occupancy at each prediction horizon in the SAME
@@ -15,12 +19,15 @@ Fallback: ConvLSTM (same interface) if the U-Net does not converge.
 
 from __future__ import annotations
 
+import math
+
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from omegaconf import DictConfig
 
 
-def _n_input_channels(cfg: DictConfig) -> int:
+def n_input_channels(cfg: DictConfig) -> int:
     ch = list(cfg.bev.input_channels)
     n = 0
     n += 1 if "occupancy" in ch else 0
@@ -62,7 +69,7 @@ class WorldModel(nn.Module):
         self.cfg = cfg
         c = cfg.world_model.base_channels
         T = len(cfg.world_model.prediction_horizons)
-        in_ch = _n_input_channels(cfg)
+        in_ch = n_input_channels(cfg)
 
         self.enc1 = DoubleConv(in_ch, c)
         self.enc2 = DoubleConv(c, c * 2)
@@ -109,6 +116,120 @@ class WorldModel(nn.Module):
         """Probabilities in [0, 1] — the inference-time entry point."""
         return torch.sigmoid(self.forward(bev_stack))
 
+    def loss(self, cond: torch.Tensor, target: torch.Tensor) -> torch.Tensor:
+        """Weighted BCE plus a smoothness penalty across horizons.
+
+        Shares a signature with DiffusionWorldModel.loss so the training loop is
+        architecture-agnostic.
+        """
+        logits = self.forward(cond)
+        pw = torch.tensor(self.cfg.world_model.pos_weight, device=logits.device)
+        bce = F.binary_cross_entropy_with_logits(logits, target, pos_weight=pw)
+        probs = torch.sigmoid(logits)
+        if probs.shape[1] > 1:
+            # Occupancy should evolve smoothly between consecutive horizons.
+            reg = (probs[:, 1:] - probs[:, :-1]).abs().mean()
+        else:
+            # mean() of an empty slice is NaN and would poison the whole run.
+            reg = probs.new_zeros(())
+        return (self.cfg.world_model.bce_weight * bce
+                + self.cfg.world_model.physics_reg_weight * reg)
+
+
+class TimestepEmbedding(nn.Module):
+    """Sinusoidal position encoding of the diffusion step, then an MLP."""
+
+    def __init__(self, dim: int) -> None:
+        super().__init__()
+        self.dim = dim
+        self.mlp = nn.Sequential(nn.Linear(dim, dim), nn.SiLU(), nn.Linear(dim, dim))
+
+    def forward(self, t: torch.Tensor) -> torch.Tensor:
+        half = self.dim // 2
+        freqs = torch.exp(
+            -math.log(10000) * torch.arange(half, device=t.device, dtype=torch.float32) / half
+        )
+        args = t.float()[:, None] * freqs[None]
+        emb = torch.cat([torch.cos(args), torch.sin(args)], dim=-1)
+        if self.dim % 2:
+            emb = F.pad(emb, (0, 1))
+        return self.mlp(emb)
+
+
+class TimestepDoubleConv(nn.Module):
+    """DoubleConv with the timestep embedding injected as a per-channel bias.
+
+    The network has to behave differently at high noise (coarse layout) than at low
+    noise (crisp edges), so it must be told which step it is denoising.
+    """
+
+    def __init__(self, in_ch: int, out_ch: int, time_dim: int) -> None:
+        super().__init__()
+        groups = next(g for g in (8, 4, 2, 1) if out_ch % g == 0)
+        self.conv1 = nn.Conv2d(in_ch, out_ch, 3, padding=1)
+        self.norm1 = nn.GroupNorm(groups, out_ch)
+        self.conv2 = nn.Conv2d(out_ch, out_ch, 3, padding=1)
+        self.norm2 = nn.GroupNorm(groups, out_ch)
+        self.emb = nn.Linear(time_dim, out_ch)
+        self.act = nn.SiLU()
+
+    def forward(self, x: torch.Tensor, temb: torch.Tensor) -> torch.Tensor:
+        h = self.act(self.norm1(self.conv1(x)))
+        h = h + self.emb(temb)[:, :, None, None]
+        return self.act(self.norm2(self.conv2(h)))
+
+
+class CondUNet(nn.Module):
+    """Timestep-conditioned U-Net used as the diffusion backbone.
+
+    Same 4-level shape as WorldModel so the deterministic and diffusion variants are a
+    fair ablation rather than a comparison of two different capacities.
+    """
+
+    def __init__(self, in_channels: int, out_channels: int, base_channels: int,
+                 time_dim: int) -> None:
+        super().__init__()
+        c = base_channels
+        self.time = TimestepEmbedding(time_dim)
+
+        self.enc1 = TimestepDoubleConv(in_channels, c, time_dim)
+        self.enc2 = TimestepDoubleConv(c, c * 2, time_dim)
+        self.enc3 = TimestepDoubleConv(c * 2, c * 4, time_dim)
+        self.enc4 = TimestepDoubleConv(c * 4, c * 8, time_dim)
+        self.bottleneck = TimestepDoubleConv(c * 8, c * 16, time_dim)
+
+        self.up4 = nn.ConvTranspose2d(c * 16, c * 8, 2, stride=2)
+        self.dec4 = TimestepDoubleConv(c * 16, c * 8, time_dim)
+        self.up3 = nn.ConvTranspose2d(c * 8, c * 4, 2, stride=2)
+        self.dec3 = TimestepDoubleConv(c * 8, c * 4, time_dim)
+        self.up2 = nn.ConvTranspose2d(c * 4, c * 2, 2, stride=2)
+        self.dec2 = TimestepDoubleConv(c * 4, c * 2, time_dim)
+        self.up1 = nn.ConvTranspose2d(c * 2, c, 2, stride=2)
+        self.dec1 = TimestepDoubleConv(c * 2, c, time_dim)
+
+        self.pool = nn.MaxPool2d(2)
+        self.head = nn.Conv2d(c, out_channels, 1)
+
+    def forward(self, x: torch.Tensor, t: torch.Tensor) -> torch.Tensor:
+        h, w = x.shape[-2], x.shape[-1]
+        if h % 16 != 0 or w % 16 != 0:
+            raise ValueError(
+                f"spatial dims must be divisible by 16 for the 4-level U-Net, got {h}x{w}"
+            )
+        temb = self.time(t)
+
+        e1 = self.enc1(x, temb)
+        e2 = self.enc2(self.pool(e1), temb)
+        e3 = self.enc3(self.pool(e2), temb)
+        e4 = self.enc4(self.pool(e3), temb)
+        b = self.bottleneck(self.pool(e4), temb)
+
+        d4 = self.dec4(torch.cat([self.up4(b), e4], dim=1), temb)
+        d3 = self.dec3(torch.cat([self.up3(d4), e3], dim=1), temb)
+        d2 = self.dec2(torch.cat([self.up2(d3), e2], dim=1), temb)
+        d1 = self.dec1(torch.cat([self.up1(d2), e1], dim=1), temb)
+        return self.head(d1)
+
 
 class ConvLSTMCell(nn.Module):
     """Single ConvLSTM cell — fallback if the U-Net does not converge."""
@@ -139,7 +260,7 @@ class WorldModelConvLSTM(nn.Module):
         self.cfg = cfg
         c = cfg.world_model.base_channels
         T = len(cfg.world_model.prediction_horizons)
-        self.cell = ConvLSTMCell(_n_input_channels(cfg), c)
+        self.cell = ConvLSTMCell(n_input_channels(cfg), c)
         self.head = nn.Conv2d(c, T, 1)
 
     def forward(self, bev_stack: torch.Tensor) -> torch.Tensor:
@@ -153,6 +274,8 @@ class WorldModelConvLSTM(nn.Module):
     def predict(self, bev_stack: torch.Tensor) -> torch.Tensor:
         return torch.sigmoid(self.forward(bev_stack))
 
+    loss = WorldModel.loss
+
 
 def build_world_model(cfg: DictConfig) -> nn.Module:
     arch = cfg.world_model.architecture
@@ -160,6 +283,9 @@ def build_world_model(cfg: DictConfig) -> nn.Module:
         return WorldModel(cfg)
     if arch == "convlstm":
         return WorldModelConvLSTM(cfg)
+    if arch == "diffusion":
+        from .ddpm import DiffusionWorldModel  # imported lazily to avoid a cycle
+        return DiffusionWorldModel(cfg)
     raise ValueError(f"Unknown world_model.architecture: {arch}")
 
 
@@ -173,7 +299,7 @@ if __name__ == "__main__":
     print(f"WorldModel demo on {device}")
 
     S = cfg.bev.size
-    B, T, C = 2, len(cfg.world_model.prediction_horizons), _n_input_channels(cfg)
+    B, T, C = 2, len(cfg.world_model.prediction_horizons), n_input_channels(cfg)
 
     for arch in ["unet", "convlstm"]:
         cfg.world_model.architecture = arch
