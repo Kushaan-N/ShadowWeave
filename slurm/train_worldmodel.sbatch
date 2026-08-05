@@ -40,8 +40,11 @@ requeue_handler() {
 }
 trap requeue_handler USR1
 
-NGPU=$(nvidia-smi --list-gpus 2>/dev/null | wc -l | tr -d ' ')
-NGPU="${NGPU:-1}"
+# The SLURM allocation, not nvidia-smi: nvidia-smi ignores CUDA_VISIBLE_DEVICES,
+# so on nodes without cgroup device isolation a gres=gpu:1 job would see every
+# physical GPU and torchrun would trample other users' allocations. (Also,
+# under `set -e` a missing nvidia-smi killed the job before any fallback ran.)
+NGPU="${SLURM_GPUS_ON_NODE:-1}"
 echo "training on ${NGPU} GPU(s)"
 
 if [[ "${NGPU}" -gt 1 ]]; then
