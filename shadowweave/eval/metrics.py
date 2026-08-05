@@ -79,18 +79,28 @@ class EvalMetrics:
         pred: torch.Tensor,
         target: torch.Tensor,
         shadow_mask: torch.Tensor | None = None,
+        horizon_idx: int | None = None,
     ) -> None:
-        """Log one (T, S, S) prediction against its (T, S, S) target."""
+        """Log a full (T, S, S) prediction stack, or one horizon's (S, S)/(1, S, S)
+        slice with its index passed via ``horizon_idx``."""
         if pred.ndim == 2:
             pred, target = pred[None], target[None]
         vals = iou(pred, target)
+        base = int(horizon_idx) if horizon_idx is not None else 0
+        if horizon_idx is None and vals.shape[0] != len(self.horizons):
+            # Without the index a single-horizon slice would silently land in
+            # bucket 0 — every horizon's score pooled into "iou_1s".
+            raise ValueError(
+                f"got {vals.shape[0]} horizon(s) but {len(self.horizons)} are "
+                "configured — pass horizon_idx when logging a single slice"
+            )
         for h in range(vals.shape[0]):
-            self._ious[h].append(float(vals[h]))
+            self._ious[base + h].append(float(vals[h]))
         if shadow_mask is not None:
             m = shadow_mask.expand_as(pred) if shadow_mask.ndim == pred.ndim else shadow_mask
             svals = masked_iou(pred, target, m.bool())
             for h in range(svals.shape[0]):
-                self._shadow_ious[h].append(float(svals[h]))
+                self._shadow_ious[base + h].append(float(svals[h]))
 
     def log_lead_time(self, seconds: float) -> None:
         self._lead_times.append(float(seconds))
