@@ -123,6 +123,7 @@ class SyntheticDataGenerator:
         split: str = "train",
         steps_per_episode: Optional[int] = None,
         seed0: int = 0,
+        usd_dir: Optional[str] = None,
     ) -> None:
         out_dir = pathlib.Path(output_dir) / split
         out_dir.mkdir(parents=True, exist_ok=True)
@@ -152,6 +153,15 @@ class SyntheticDataGenerator:
 
             obs = self.env.reset(seed=seed)
 
+            # Optional USD twin of this episode, so the same randomised scene and
+            # trajectory can be re-rendered in Omniverse / Isaac Sim later without
+            # regenerating it or losing correspondence to the training targets.
+            usd = None
+            if usd_dir:
+                from .usd_export import USDSceneExporter
+                usd = USDSceneExporter(self.cfg)
+                usd.begin(self.env)
+
             # Roll the full episode plus the lookahead needed by the longest horizon.
             poses: list[tuple[np.ndarray, float]] = []
             snaps: list[dict] = []
@@ -159,6 +169,8 @@ class SyntheticDataGenerator:
             collisions: list[bool] = []
 
             for _ in range(T + max_h + 1):
+                if usd is not None:
+                    usd.record(self.env)
                 poses.append((obs["agent_pos"].copy(), obs["agent_yaw"]))
                 snaps.append(self.env.geom_snapshot())
                 depths.append(obs["depth"])
@@ -208,6 +220,9 @@ class SyntheticDataGenerator:
                 np.savez_compressed(path, **payload)
             else:
                 np.savez(path, **payload)
+            if usd is not None:
+                usd.save(pathlib.Path(usd_dir) / f"ep{seed:06d}.usda")
+
             total_steps += T
             progress.update()
 
@@ -226,6 +241,8 @@ def main() -> None:
     ap.add_argument("--out", type=str, default=None)
     ap.add_argument("--steps", type=int, default=None)
     ap.add_argument("--seed0", type=int, default=0)
+    ap.add_argument("--usd-dir", type=str, default=None,
+                    help="also write an OpenUSD twin of each episode (needs usd-core)")
     ap.add_argument("--overrides", nargs="*", default=[])
     args = ap.parse_args()
 
@@ -235,7 +252,8 @@ def main() -> None:
 
     print(f"Generating {args.episodes} episodes → {out}/{args.split}")
     gen = SyntheticDataGenerator(cfg)
-    gen.generate(args.episodes, out, split=args.split, steps_per_episode=args.steps, seed0=args.seed0)
+    gen.generate(args.episodes, out, split=args.split, steps_per_episode=args.steps,
+                 seed0=args.seed0, usd_dir=args.usd_dir)
 
 
 if __name__ == "__main__":
