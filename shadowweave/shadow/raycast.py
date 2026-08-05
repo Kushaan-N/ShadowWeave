@@ -60,7 +60,10 @@ class ShadowRaycaster(nn.Module):
         # Init: each ray strongly prefers the zone its azimuth falls in, with a soft
         # tail into neighbours so gradients can move rays between zones.
         ray_idx  = torch.arange(self.num_rays, dtype=torch.float32)
-        natural  = ray_idx / self.num_rays * self.num_cells - 0.5
+        # Ray CENTERS, not edges: without the +0.5 the assignment is asymmetric
+        # left-vs-right, and a mirrored scene yields a slightly different grid
+        # than the mirrored grid — a systematic directional bias in the audio.
+        natural  = (ray_idx + 0.5) / self.num_rays * self.num_cells - 0.5
         zone_idx = torch.arange(self.num_cells, dtype=torch.float32)
         logits   = -((natural[:, None] - zone_idx[None, :]) ** 2) / (2 * 0.75 ** 2)
         self.zone_assign = nn.Parameter(logits * cfg.shadow.zone_init_sharpness)
@@ -107,6 +110,10 @@ class ShadowRaycaster(nn.Module):
                 Value = fraction of the ray's range hidden behind the first surface,
                 averaged over the elevation band. Close obstacle → large shadow.
         """
+        if depth_map.ndim == 4 and depth_map.shape[1] != 1:
+            # squeeze(1) is a no-op for C>1 and the later elevation mean would
+            # silently average channels instead — wrong shape, no error.
+            raise ValueError(f"depth_map must have 1 channel, got {depth_map.shape}")
         # A NaN here would otherwise reach the audio output unflagged.
         depth_map = sanitize_depth(depth_map)
         B = depth_map.shape[0]
