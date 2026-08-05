@@ -23,7 +23,7 @@ pip install -e .
 
 make smoke                              # end-to-end smoke test, no training needed
 make bench                              # size batch/workers before booking GPU time
-make test                               # 172 tests
+make test                               # 193 tests
 ```
 
 `make help` lists everything:
@@ -202,7 +202,7 @@ shadowweave/
 ├── world_model/   unet.py (U-Net + ConvLSTM), ddpm.py (diffusion), dataset.py, train.py
 ├── agents/        local_agent.py, global_agent.py, orchestrator.py
 ├── audio/         hrtf.py, cues.py
-├── sim/           mujoco_env.py, synthetic_data.py
+├── sim/           mujoco_env.py, synthetic_data.py, usd_export.py (OpenUSD)
 ├── dashboard/     app.py (Gradio)
 ├── eval/          metrics.py, baselines.py, run_eval.py
 ├── configs/       default.yaml — all hyperparameters
@@ -227,6 +227,7 @@ The test suite is organised by what each file protects:
 | `test_robustness.py` | DDP, degenerate sensor input, hostile configs, shard arithmetic |
 | `test_demos.py` | every module's `__main__` still runs |
 | `test_diffusion.py` | the diffusion model samples rather than collapsing; shadow-diversity metric |
+| `test_usd_export.py` | exported scene geometry matches MuJoCo exactly, not just "a file appeared" |
 
 All hyperparameters live in `configs/default.yaml`. Override anything from the CLI:
 
@@ -307,6 +308,23 @@ python -m shadowweave.sim.synthetic_data --episodes 80 --split val --seed0 90000
 Files are named by global seed so SLURM array shards never collide, and written
 uncompressed so the loader can memory-map them (`np.load(mmap_mode=...)` is silently
 ignored for compressed `.npz`, which otherwise forces a full decompress per sample).
+
+### OpenUSD export
+
+Rollouts can be written as an OpenUSD twin alongside the `.npz` training data:
+
+```bash
+python -m shadowweave.sim.synthetic_data --episodes 400 --split train --usd-dir data/usd
+python -m shadowweave.sim.usd_export --out scene.usda --difficulty debris   # one episode
+```
+
+MuJoCo is cheap to roll out but renders flat, untextured frames. USD is what Omniverse
+and Isaac Sim read, so the export carries the *same* randomised scene, the *same* agent
+trajectory and an egocentric camera prim — letting an episode be re-rendered
+photorealistically later without regenerating it or breaking correspondence to its
+training targets. Stage is Z-up in metres, matching MuJoCo.
+
+Requires `usd-core` (`pip install -e ".[usd]"`); nothing else in the pipeline imports it.
 
 > **Rollouts generated before the egocentric-BEV change are unusable** — their targets
 > were world-frame and constant. `RolloutDataset` detects the old schema and tells you
