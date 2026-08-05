@@ -144,7 +144,10 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
             _wandb.init(
                 project=cfg.wandb.project,
                 entity=cfg.wandb.entity,
-                mode=cfg.wandb.mode,
+                # The env var must win: passing mode= explicitly overrides
+                # WANDB_MODE=offline, so a keyless cluster node would error out
+                # of wandb entirely and record nothing to sync later.
+                mode=os.environ.get("WANDB_MODE", cfg.wandb.mode),
                 id=run_id,
                 resume="allow",
                 config=OmegaConf.to_container(cfg, resolve=True),
@@ -243,7 +246,12 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
                 # Physics consistency: occupancy should evolve smoothly between
                 # consecutive horizons, so penalise abrupt jumps along the T axis.
                 probs = torch.sigmoid(logits)
-                physics_reg = (probs[:, 1:] - probs[:, :-1]).abs().mean()
+                if probs.shape[1] > 1:
+                    physics_reg = (probs[:, 1:] - probs[:, :-1]).abs().mean()
+                else:
+                    # mean() of the empty slice is NaN, and NaN + bce poisons the
+                    # reported loss for the whole run when only one horizon is set.
+                    physics_reg = probs.new_zeros(())
                 loss = cfg.world_model.bce_weight * bce + cfg.world_model.physics_reg_weight * physics_reg
 
             opt.zero_grad(set_to_none=True)
