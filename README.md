@@ -23,7 +23,7 @@ pip install -e .
 
 make smoke                              # end-to-end smoke test, no training needed
 make bench                              # size batch/workers before booking GPU time
-make test                               # 193 tests
+make test                               # 210 tests
 ```
 
 `make help` lists everything:
@@ -56,6 +56,7 @@ python -m shadowweave.sim.mujoco_env    # sim observations across all three tier
 python -m shadowweave.audio.hrtf        # spatialisation + phase-continuity checks
 python -m shadowweave.eval.baselines    # baselines, lead time, calibration
 python -m shadowweave.world_model.ddpm  # diffusion sampling + sample diversity
+python -m shadowweave.eval.reasoning    # spatial-reasoning question generation
 ```
 
 ## Dashboard
@@ -204,7 +205,7 @@ shadowweave/
 ├── audio/         hrtf.py, cues.py
 ├── sim/           mujoco_env.py, synthetic_data.py, usd_export.py (OpenUSD)
 ├── dashboard/     app.py (Gradio)
-├── eval/          metrics.py, baselines.py, run_eval.py
+├── eval/          metrics.py, baselines.py, reasoning.py, run_eval.py
 ├── configs/       default.yaml — all hyperparameters
 ├── console.py     terminal tables/progress (degrades to plain text in SLURM logs)
 └── utils.py       device, seeding, config loading, checkpoint I/O
@@ -228,6 +229,7 @@ The test suite is organised by what each file protects:
 | `test_demos.py` | every module's `__main__` still runs |
 | `test_diffusion.py` | the diffusion model samples rather than collapsing; shadow-diversity metric |
 | `test_usd_export.py` | exported scene geometry matches MuJoCo exactly, not just "a file appeared" |
+| `test_reasoning.py` | the benchmark's control is trivially passable and its hard questions are not |
 
 All hyperparameters live in `configs/default.yaml`. Override anything from the CLI:
 
@@ -308,6 +310,41 @@ python -m shadowweave.sim.synthetic_data --episodes 80 --split val --seed0 90000
 Files are named by global seed so SLURM array shards never collide, and written
 uncompressed so the loader can memory-map them (`np.load(mmap_mode=...)` is silently
 ignored for compressed `.npz`, which otherwise forces a full decompress per sample).
+
+### Spatial-reasoning benchmark
+
+```bash
+make reason        # or: python -m shadowweave.eval.reasoning --split val
+```
+
+Auto-generates questions with *verifiable* answers from simulator ground truth —
+`"Is there an obstacle to your left that you cannot currently see?"`,
+`"Will the path ahead be blocked in 5 seconds?"`,
+`"How many separate obstacles are hidden?"` — and scores the world model against two
+trivial strategies. This is only possible because the scenes are simulated: real
+footage has no ground truth for what is behind a crate.
+
+Questions split into two classes, and the split is the point:
+
+| class | who can answer | role |
+|---|---|---|
+| `perception_only` | a camera alone | **control** — must be ~1.0 for everyone, or the question set is broken |
+| `needs_world_model` | only a model that predicts into shadow | where all the signal is |
+
+Two baselines bracket the problem: `blind_optimistic` assumes shadow is empty,
+`blind_pessimistic` assumes it is full. Each wins a different subset depending on
+whether the shadow happens to be occupied, so beating only one proves nothing —
+`reasoning_gain_over_best_baseline` requires clearing **both**.
+
+```
+  predictor          control  needs world model  count MAE
+  model                1.000              0.587     601.87
+  blind_optimistic     1.000              0.297       3.07
+  blind_pessimistic    1.000              0.560       1.77
+```
+
+A large `count MAE` is diagnostic rather than incidental: it means the model is
+emitting speckle instead of objects, which IOU alone will not reveal.
 
 ### OpenUSD export
 
