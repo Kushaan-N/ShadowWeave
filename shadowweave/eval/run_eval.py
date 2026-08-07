@@ -191,6 +191,9 @@ def run_eval(
                             # prediction was made, not on the present frame.
                             baselines.log(hi, probs[hi], truth, p_shadow, observed_at_issue=p_obs)
                             ece_samples.append(calibration_error(pred_t, truth))
+                            # Lead time on the SAME issue-pose truth/observation, not on
+                            # the current-pose obs (which mismatched frames).
+                            lead_tracker.log_due(horizons[hi], probs[hi], truth, p_obs)
                     if step - issued >= int(max(horizons) * fps):
                         pending.remove(entry)
                 pending.append((
@@ -199,8 +202,6 @@ def run_eval(
                     (vis[0] < 0.5).cpu(),
                     BaselineComparison.observation_snapshot(occ[0]),
                 ))
-
-                lead_tracker.observe(step, pred_np, obs, horizons, fps)
 
                 prev = obs["agent_pos"].copy()
                 obs = env.step(action=out.nav_action)
