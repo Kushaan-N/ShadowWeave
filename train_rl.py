@@ -26,7 +26,7 @@ import numpy as np
 import torch
 from omegaconf import DictConfig
 
-from shadowweave.agents.local_agent import compute_reward, observation_dim
+from shadowweave.agents.local_agent import LocalAgent, compute_reward, observation_dim
 from shadowweave.shadow.bev import BEVProjector, bev_flow
 from shadowweave.shadow.raycast import ShadowRaycaster
 from shadowweave.shadow.zones import pool_predictions_to_zones_torch
@@ -36,9 +36,64 @@ from shadowweave.utils import (
     get_device,
     load_checkpoint,
     load_config,
+    save_checkpoint,
     seed_everything,
 )
 from shadowweave.world_model import build_world_model
+
+
+def _local_agent_policy_class():
+    """Build the SB3 policy class lazily, so a missing stable-baselines3 still yields a
+    friendly ImportError at call time rather than at module import.
+
+    The policy's actor and critic ARE a LocalAgent. train_rl used to train SB3's
+    built-in MlpPolicy and save an SB3 .zip, but every consumer (run_eval,
+    orchestrator, dashboard) builds a LocalAgent and loads a torch state_dict — so the
+    trained policy could never be loaded and the whole PPO run was wasted. Wrapping a
+    LocalAgent means PPO trains exactly the deployed network and its weights export
+    straight to a LocalAgent checkpoint.
+    """
+    import torch.nn as nn
+    from stable_baselines3.common.policies import ActorCriticPolicy
+
+    class LocalAgentPolicy(ActorCriticPolicy):
+        def __init__(self, *args, sw_cfg=None, **kwargs):
+            self._sw_cfg = sw_cfg
+            kwargs["ortho_init"] = False  # LocalAgent initialises its own weights
+            super().__init__(*args, **kwargs)
+
+        def _build(self, lr_schedule) -> None:
+            # Replace SB3's mlp_extractor/action_net/value_net entirely with a
+            # LocalAgent: net -> action mean (Tanh-bounded), value_head -> state value,
+            # plus a state-independent log_std for the diagonal Gaussian.
+            self.agent = LocalAgent(self._sw_cfg)
+            self.log_std = nn.Parameter(torch.zeros(int(self.action_space.shape[0])))
+            self.optimizer = self.optimizer_class(
+                self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
+            )
+
+        def _distribution(self, obs):
+            return self.action_dist.proba_distribution(self.agent.net(obs.float()), self.log_std)
+
+        def forward(self, obs, deterministic: bool = False):
+            dist = self._distribution(obs)
+            actions = dist.get_actions(deterministic=deterministic)
+            return actions, self.agent.value_head(obs.float()), dist.log_prob(actions)
+
+        def evaluate_actions(self, obs, actions):
+            dist = self._distribution(obs)
+            return self.agent.value_head(obs.float()), dist.log_prob(actions), dist.entropy()
+
+        def get_distribution(self, obs):
+            return self._distribution(obs)
+
+        def _predict(self, observation, deterministic: bool = False):
+            return self._distribution(observation).get_actions(deterministic=deterministic)
+
+        def predict_values(self, obs):
+            return self.agent.value_head(obs.float())
+
+    return LocalAgentPolicy
 
 
 def load_world_model(cfg: DictConfig, device: torch.device):
@@ -207,23 +262,27 @@ def train_ppo(cfg: DictConfig, n_steps: int = 1_000_000) -> None:
         print("tensorboard not installed — skipping TB logging (pip install tensorboard)")
 
     model = PPO(
-        "MlpPolicy",
+        _local_agent_policy_class(),
         venv,
         learning_rate=cfg.agents.local.ppo_lr,
         gamma=cfg.agents.local.ppo_gamma,
         clip_range=cfg.agents.local.ppo_clip,
         n_steps=cfg.agents.local.ppo_n_steps,
-        policy_kwargs=dict(net_arch=[cfg.agents.local.hidden_dim] * cfg.agents.local.num_layers),
+        policy_kwargs=dict(sw_cfg=cfg),
         tensorboard_log=tb_log,
         verbose=1,
         seed=cfg.seed,
         device=str(device),
     )
     model.learn(total_timesteps=n_steps)
-    out = ckpt_dir / "ppo_final.zip"
-    model.save(out)
+    # Export the trained LocalAgent as a native checkpoint the rest of the system
+    # actually loads (run_eval/orchestrator/dashboard do LocalAgent.load_state_dict).
+    # The SB3 .zip is kept only for resuming PPO itself.
+    out = ckpt_dir / "best.pt"
+    save_checkpoint(out, model.policy.agent, cfg, metrics={"ppo_timesteps": float(n_steps)})
+    model.save(ckpt_dir / "ppo_sb3.zip")
     venv.close()
-    print(f"PPO training done. Saved to {out}")
+    print(f"PPO training done. LocalAgent checkpoint: {out}  (SB3 model: {ckpt_dir/'ppo_sb3.zip'})")
 
 
 def main() -> None:
