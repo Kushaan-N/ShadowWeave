@@ -220,7 +220,7 @@ def make_env_class(cfg: DictConfig, device: torch.device):
 
             terminated = cur_d < 0.5
             if terminated:
-                reward += 10.0
+                reward += cfg.agents.local.reward_goal_bonus
             truncated = self._step_count >= cfg.sim.max_episode_steps
             return obs, reward, terminated, truncated, {"collision": collision}
 
