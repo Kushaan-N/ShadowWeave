@@ -94,3 +94,15 @@ echo " root       : ${SW_ROOT}"
 nvidia-smi --query-gpu=index,name,memory.total --format=csv,noheader 2>/dev/null \
   || echo " gpu        : none visible"
 echo "─────────────────────────────────────────────"
+
+# Guard against the silent-CPU trap: a CPU-only wheel (or one newer than the driver
+# supports) leaves torch.cuda.is_available() False, and every job then crawls on CPU
+# with no error. If a GPU is visible but torch can't use it, say so loudly.
+if command -v nvidia-smi &>/dev/null && nvidia-smi -L &>/dev/null; then
+  if ! python -c "import torch, sys; sys.exit(0 if torch.cuda.is_available() else 1)" 2>/dev/null; then
+    echo "!! WARNING: a GPU is visible but torch.cuda.is_available() is False."
+    echo "!!          This is almost always a CPU-only or driver-mismatched torch wheel;"
+    echo "!!          every job will run on CPU. Rebuild the env ON A GPU NODE:"
+    echo "!!          SW_CUDA=cuXXX ./scripts/setup_venv.sh   (see HANDOFF §3)"
+  fi
+fi
