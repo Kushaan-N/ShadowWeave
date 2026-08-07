@@ -102,6 +102,27 @@ class EMA:
         self.decay, self.steps, self.shadow = state["decay"], state["steps"], state["shadow"]
 
 
+class _TrainStep(torch.nn.Module):
+    """Routes the world model's loss through ``forward`` so DistributedDataParallel's
+    gradient all-reduce hooks fire.
+
+    DDP arms its reducer inside ``forward()`` (``Reducer.prepare_for_backward``).
+    Calling ``model.loss(x, y)`` directly — the architecture-agnostic entry point the
+    rest of the codebase relies on — bypasses ``forward`` entirely, so with more than
+    one rank no gradient is ever averaged: each rank trains on its own sampler shard
+    and rank 0 ships a silently quarter-data model. Wrapping the loss call in a module
+    whose ``forward`` *is* the loss, and putting DDP around that, restores syncing
+    without any world model needing to know DDP exists.
+    """
+
+    def __init__(self, model: torch.nn.Module) -> None:
+        super().__init__()
+        self.model = model
+
+    def forward(self, x: torch.Tensor, y: torch.Tensor) -> torch.Tensor:
+        return self.model.loss(x, y)
+
+
 def _lr_at(step: int, cfg: DictConfig, total_steps: int) -> float:
     """Linear warmup then cosine decay. Warmup matters here because pos_weight makes
     the first few batches produce very large gradients."""
@@ -191,11 +212,17 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
         print(f"  Parameters: {count_parameters(model)/1e6:.1f}M")
     if cfg.world_model.compile and hasattr(torch, "compile"):
         model = torch.compile(model)
+    # Wrap the loss (not the model) in DDP — see _TrainStep. Optimizer, grad clip and
+    # backward all go through train_module so the reducer sees every gradient; EMA,
+    # validation and checkpointing keep operating on the raw core via unwrap_model.
+    train_module: torch.nn.Module = _TrainStep(model)
     if world_size > 1:
-        model = DistributedDataParallel(model, device_ids=[local_rank] if device.type == "cuda" else None)
+        train_module = DistributedDataParallel(
+            train_module, device_ids=[local_rank] if device.type == "cuda" else None
+        )
 
     opt = torch.optim.AdamW(
-        model.parameters(), lr=cfg.world_model.lr, weight_decay=cfg.world_model.weight_decay
+        train_module.parameters(), lr=cfg.world_model.lr, weight_decay=cfg.world_model.weight_decay
     )
     scaler = torch.amp.GradScaler("cuda", enabled=use_amp)
     pos_weight = torch.tensor(cfg.world_model.pos_weight, device=device)
@@ -243,12 +270,13 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
             with torch.autocast("cuda", enabled=use_amp):
                 # Each architecture owns its objective: weighted BCE + horizon
                 # smoothness for the U-Net, epsilon-MSE for the diffusion model.
-                loss = unwrap_model(model).loss(x, y)
+                # Called through the DDP-wrapped module so gradients are all-reduced.
+                loss = train_module(x, y)
 
             opt.zero_grad(set_to_none=True)
             scaler.scale(loss).backward()
             scaler.unscale_(opt)
-            torch.nn.utils.clip_grad_norm_(model.parameters(), cfg.world_model.grad_clip)
+            torch.nn.utils.clip_grad_norm_(train_module.parameters(), cfg.world_model.grad_clip)
             scaler.step(opt)
             scaler.update()
             if ema is not None:
