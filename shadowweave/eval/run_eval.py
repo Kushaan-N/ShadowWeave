@@ -258,7 +258,20 @@ def main() -> None:
     args = ap.parse_args()
 
     cfg = load_config(overrides=args.overrides)
-    run_eval(cfg, args.ckpt, n_episodes=args.episodes, policy_ckpt=args.policy,
+
+    # Default to the trained local agent so collision rate is not silently measured on
+    # an untrained (random) policy. train_rl now exports it here as best.pt.
+    policy = args.policy
+    if policy is None:
+        default_policy = pathlib.Path(cfg.agents.local.checkpoint_dir) / "best.pt"
+        if default_policy.exists():
+            policy = str(default_policy)
+            print(f"Using trained local agent: {policy}")
+        else:
+            print(f"[WARNING] no trained local agent at {default_policy} — collision rate "
+                  "will reflect an UNTRAINED policy. Train it with train_rl.py or pass --policy.")
+
+    run_eval(cfg, args.ckpt, n_episodes=args.episodes, policy_ckpt=policy,
              allow_random_weights=args.allow_random_weights)
 
 
