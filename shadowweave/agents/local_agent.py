@@ -77,12 +77,17 @@ def compute_reward(
     cfg: DictConfig,
     progress: float = 0.0,
     shadow_exposure: float = 0.0,
+    audio_load: float = 0.0,
 ) -> float:
     """PPO reward.
 
     ``collision`` must be a real geometric overlap. train_rl.py previously derived it
     from ``occupancy.max() > 0.5``, and since walls were always marked 1.0 that was
     True on every step — the agent received a constant -10 and could not learn.
+
+    ``audio_load`` is the fraction of zones loud enough to sound (>= audio.cue_threshold);
+    reward_audio_clarity_weight is negative, so many zones sounding at once — hard to
+    parse for a user navigating by ear — is penalised.
     """
     r = 0.0
     if collision:
@@ -90,6 +95,7 @@ def compute_reward(
     r += cfg.agents.local.reward_efficiency_weight * distance_moved
     r += cfg.agents.local.reward_progress_weight * progress
     r += cfg.agents.local.reward_shadow_weight * shadow_exposure
+    r += cfg.agents.local.reward_audio_clarity_weight * audio_load
     return float(r)
 
 
