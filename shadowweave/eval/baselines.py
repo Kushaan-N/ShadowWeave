@@ -35,6 +35,7 @@ class BaselineComparison:
         self._scores: dict[tuple[str, int], list[float]] = defaultdict(list)
         self._shadow: dict[tuple[str, int], list[float]] = defaultdict(list)
         self._model: dict[int, list[float]] = defaultdict(list)
+        self._model_shadow: dict[int, list[float]] = defaultdict(list)
 
     @staticmethod
     def observation_snapshot(occupancy: torch.Tensor) -> torch.Tensor:
@@ -60,6 +61,10 @@ class BaselineComparison:
     ) -> None:
         pred_t = torch.from_numpy(np.asarray(model_pred)).unsqueeze(0)
         self._model[horizon_idx].append(float(iou(pred_t, truth)))
+        if shadow_mask is not None:
+            self._model_shadow[horizon_idx].append(
+                float(masked_iou(pred_t, truth, shadow_mask.bool()))
+            )
 
         candidates: dict[str, torch.Tensor] = {"empty": torch.zeros_like(truth)}
         if observed_at_issue is not None:
@@ -89,6 +94,17 @@ class BaselineComparison:
                 default=0.0,
             )
             out[f"model_gain_over_best_baseline_{label}"] = float(np.mean(model_vals)) - best
+
+        # Same comparison restricted to shadow — where the project's actual claim lives.
+        # Both shadow IOUs are inflated by empty-vs-empty credit, so the raw numbers are
+        # not comparable by eye; the gain (model minus the strongest baseline) is.
+        for h, model_vals in sorted(self._model_shadow.items()):
+            label = f"{self.horizons[h]:g}s" if h < len(self.horizons) else f"h{h}"
+            best = max(
+                (float(np.mean(v)) for (n, hh), v in self._shadow.items() if hh == h),
+                default=0.0,
+            )
+            out[f"model_shadow_gain_over_best_baseline_{label}"] = float(np.mean(model_vals)) - best
         return out
 
 
