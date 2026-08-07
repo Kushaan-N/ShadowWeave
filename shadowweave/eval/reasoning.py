@@ -121,10 +121,14 @@ def answer_question(
     shadow = visibility < 0.5
 
     if q.kind == "visible_presence":
-        # Graded against the observation every predictor shares, so this is a true
-        # control: it validates the question set rather than ranking the predictors.
-        # Grading it against t+h occupancy instead made a correct baseline score 0.60
-        # and the benchmark look broken.
+        # Control question. Ground truth is graded from `observed` (what the camera
+        # actually sees) so the answer is well-defined; predictors are graded from
+        # their OWN occupancy (record leaves observed=None) restricted to the visible
+        # region, so a predictor that cannot even reproduce currently-visible obstacles
+        # fails it. Previously every predictor was handed the same `observed` and so
+        # scored an identical, unconditional 1.0 — the control was a no-op that could
+        # never flag anything. (Grading against the full t+h occupancy instead made a
+        # correct baseline score 0.60 and look broken, hence the ~shadow restriction.)
         grid = (np.asarray(observed) > threshold) if observed is not None else occ
         return bool((grid & zone_mask(S, q.meta["zone"]) & ~shadow).any())
     if q.kind == "occluded_presence":
@@ -288,7 +292,11 @@ class ReasoningBenchmark:
         for q in questions:
             self.n_questions += 1
             for name, occ in predictions.items():
-                got = answer_question(q, occ, visibility, observed=observed)
+                # Predictors answer from their OWN occupancy — NOT the shared
+                # observation — so the visible_presence control actually discriminates
+                # instead of scoring every predictor a meaningless 1.0. The ground
+                # truth still uses the observation (QuestionGenerator.gt).
+                got = answer_question(q, occ, visibility)
                 self._hits.setdefault((name, q.kind), []).append(self._correct(q, got))
                 self._by_class.setdefault((name, q.requires_world_model), []).append(
                     self._correct(q, got))
