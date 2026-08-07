@@ -305,7 +305,12 @@ class ShadowWeaveEnv:
         """
         self._debris = []
         horizon_s = max(self.cfg.world_model.prediction_horizons)
-        span = self.cfg.sim.max_episode_steps + horizon_s * self.cfg.sim.fps
+        # Stagger across the frames actually rolled and indexed into targets:
+        # data.steps_per_episode observations, each looking up to max-horizon ahead.
+        # Keying this to sim.max_episode_steps (500) instead gave span 800 while the
+        # roll only reaches ~data.steps_per_episode + max_h*fps (~600), so debris
+        # released past that never landed in any target — ~22% of the debris signal.
+        span = int(self.cfg.data.steps_per_episode + horizon_s * self.cfg.sim.fps)
         for i in range(_N_DEBRIS):
             jid = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, f"debris_joint_{i}")
             if jid < 0:
