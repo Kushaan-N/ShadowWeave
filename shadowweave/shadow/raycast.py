@@ -207,7 +207,13 @@ class ShadowRaycaster(nn.Module):
         # fix for empty space previously reading as maximum uncertainty: with an
         # empty volume opacity → 0, so shadow → 0.
         ray_shadow = opacity * (1.0 - term_depth)
-        return self._rays_to_zones(ray_shadow)
+        grid = self._rays_to_zones(ray_shadow)
+        # Fail toward "stop": a non-finite occupancy field (e.g. inf/NaN out of the
+        # CNN under AMP) must read as maximum uncertainty, never as clear. Unlike
+        # forward_from_depth, this path never sanitised anything, so a NaN reached the
+        # grid and NaN >= uncertainty_stop_threshold is False — silently disabling the
+        # stop override. Map non-finite cells to 1.0 (max danger) to match the contract.
+        return torch.nan_to_num(grid, nan=1.0, posinf=1.0, neginf=1.0).clamp(0.0, 1.0)
 
 
 if __name__ == "__main__":
