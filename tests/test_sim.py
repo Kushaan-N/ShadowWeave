@@ -58,6 +58,35 @@ class TestObservationVaries:
         assert float(np.abs(pos - pos[0]).max()) > 0.05
 
 
+class TestDepthGeometry:
+    """MuJoCo's GL depth is planar (distance along the optical axis), but the BEV
+    projector and the raycast fallback both assume radial (Euclidean) distance.
+    Uncorrected, the observed occupancy/visibility the world model trains on were wrong
+    by ~1/cos toward the frame edges (~28% at the edge) — where the shadows live.
+    """
+
+    def test_gl_depth_is_radial_at_the_edges(self, sim_cfg):
+        sim_cfg.sim.difficulty = "static"
+        env = ShadowWeaveEnv(sim_cfg)
+        obs = env.reset(seed=3)
+        gl = np.asarray(obs["depth_metric"], dtype=float)   # what the pipeline consumes
+        rc = env._raycast_depth().astype(float)             # radial (Euclidean) reference
+        env.close()
+
+        mr = float(sim_cfg.shadow.max_range_m)
+        h, w = gl.shape
+        surf = (rc < mr * 0.98) & (gl < mr * 0.98) & np.isfinite(gl) & (gl > 0.05)
+        # Restrict to the outer columns, where a planar/radial mismatch is largest.
+        edge = np.zeros_like(surf)
+        edge[:, : w // 5] = True
+        edge[:, -(w // 5):] = True
+        m = surf & edge
+        assert int(m.sum()) > 30, "not enough edge surface pixels to test"
+        ratio = float(np.median(rc[m] / gl[m]))
+        # Planar depth gives ~1.28 here; radial (correct) gives ~1.0.
+        assert ratio < 1.10, f"edge depth reads planar, not radial (rc/gl={ratio:.3f})"
+
+
 class TestDepthNormalisation:
     """Per-frame max normalisation made the depth scale drift between frames."""
 
