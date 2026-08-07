@@ -128,6 +128,21 @@ class RolloutDataset(Dataset):
         np.save(tmp, array)
         os.replace(tmp, p)  # atomic within a filesystem
 
+    def close(self) -> None:
+        """Release memmap handles.
+
+        On a networked filesystem (scratch on most clusters) an unlinked file that is
+        still mmapped lingers as a .nfs* placeholder, so a caller that then removes the
+        data directory — e.g. a TemporaryDirectory — hits "Directory not empty". Close
+        the maps first. Harmless for a persistent data dir; only matters when the dir is
+        about to be deleted.
+        """
+        for m in self._maps.values():
+            mm = getattr(m, "_mmap", None)
+            if mm is not None:
+                mm.close()
+        self._maps.clear()
+
     def _get_map(self, fi: int, key: str) -> np.memmap:
         cached = self._maps.get((fi, key))
         if cached is None:
@@ -205,8 +220,17 @@ if __name__ == "__main__":
             print(f"  {k}: {tuple(v.shape)} {v.dtype}")
         print(f"  positive rate: {ds.positive_rate():.4f}")
 
+        import gc
+
         from torch.utils.data import DataLoader
         dl = DataLoader(ds, batch_size=4, num_workers=2)
-        batch = next(iter(dl))
+        it = iter(dl)
+        batch = next(it)
         print(f"  batched (num_workers=2): {tuple(batch['input'].shape)}")
+        # Shut the workers down and release every memmap before the TemporaryDirectory
+        # is removed: on a networked FS an open memmap survives unlink as a .nfs*
+        # placeholder and rmtree then fails with "Directory not empty".
+        del it, dl
+        gc.collect()
+        ds.close()
     print("RolloutDataset OK")
