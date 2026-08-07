@@ -417,6 +417,22 @@ class ShadowWeaveEnv:
     # Observation
     # ------------------------------------------------------------------
 
+    def _planar_to_radial(self, shape: tuple[int, int]) -> np.ndarray:
+        """Per-pixel factor converting MuJoCo's planar (optical-axis) GL depth to the
+        radial (Euclidean) distance the BEV projector and _raycast_depth both assume:
+        sqrt(1 + x^2 + y^2), with x, y the pixel directions in tan(FOV/2) space. Cached
+        per resolution."""
+        cache = getattr(self, "_p2r_cache", None)
+        if cache is None or cache.shape != tuple(shape):
+            h, w = shape
+            fov = math.radians(self.cfg.sim.camera_fov)
+            ndc_x = np.linspace(-1, 1, w, dtype=np.float32) * math.tan(fov / 2)
+            ndc_y = np.linspace(1, -1, h, dtype=np.float32) * math.tan(fov / 2)
+            gx, gy = np.meshgrid(ndc_x, ndc_y)
+            cache = np.sqrt(1.0 + gx ** 2 + gy ** 2).astype(np.float32)
+            self._p2r_cache = cache
+        return cache
+
     def _render_obs(self) -> dict[str, Any]:
         # RGB costs a second full mjr_readPixels pass and is unused by data
         # generation and RL — only the dashboard needs it. Profiling put the two
@@ -437,7 +453,15 @@ class ShadowWeaveEnv:
             # Depth rendering failed (missing ARB_clip_control on some macOS stacks).
             # Fall back to a raycast against the true geometry so the pipeline still
             # sees a geometrically correct depth map instead of a degenerate one.
-            depth_metric = self._raycast_depth()
+            depth_metric = self._raycast_depth()   # already radial
+        else:
+            # MuJoCo's GL depth is PLANAR (distance along the optical axis), but the
+            # BEV projector and the raycast fallback both treat depth as RADIAL
+            # (Euclidean camera-to-surface distance). Uncorrected, observed occupancy
+            # and visibility are wrong by up to 1/cos toward the frame edges (~28% at
+            # the edge, ~41% in the corners for a 90 degree FOV) — exactly where the
+            # shadows the system reasons about live. Convert planar -> radial.
+            depth_metric = depth_metric * self._planar_to_radial(depth_metric.shape)
 
         # FIXED normalisation. Dividing by the per-frame max made the scale drift
         # frame to frame, so shadow values were not comparable across time.
