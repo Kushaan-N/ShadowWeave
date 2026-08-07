@@ -230,7 +230,8 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
     raw = unwrap_model(model)
     ema = EMA(raw, cfg.world_model.ema_decay) if cfg.world_model.ema else None
 
-    start_epoch, best_val, best_iou, bad_epochs, global_step = 0, float("inf"), 0.0, 0, 0
+    iou_key = f"iou_{cfg.eval.iou_horizon:g}s"
+    start_epoch, best_iou, best_val, bad_epochs, global_step = 0, -1.0, float("inf"), 0, 0
     if resume and pathlib.Path(resume).exists():
         state = load_checkpoint(resume, map_location=device)
         unwrap_model(model).load_state_dict(state["model"])
@@ -241,12 +242,23 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
         if ema is not None and "ema" in state:
             ema.load_state_dict(state["ema"])
         start_epoch = state.get("epoch", 0) + 1
-        best_val = state.get("metrics", {}).get("val_loss", float("inf"))
+        # Patience must survive a requeue, or early stopping can never fire on a job
+        # that requeues before early_stop_patience epochs elapse.
+        bad_epochs = int(state.get("bad_epochs", 0))
+        # The best score lives in best.pt, not in the last.pt we resume from. Reading
+        # the resume file's metrics would reset the bar to the latest (possibly worse)
+        # epoch, letting a subsequent mediocre epoch overwrite the true best.
+        best_ckpt = ckpt_dir / "best.pt"
+        if best_ckpt.exists():
+            bm = load_checkpoint(best_ckpt, map_location="cpu").get("metrics", {})
+            best_iou = float(bm.get(iou_key, -1.0))
+            best_val = float(bm.get("val_loss", float("inf")))
         # Without this the LR schedule restarts from warmup on every requeue, so a
         # job that gets requeued a few times never leaves the warmup ramp.
         global_step = start_epoch * len(train_dl)
         if is_main:
-            print(f"  Resumed from {resume} at epoch {start_epoch} (step {global_step})")
+            print(f"  Resumed from {resume} at epoch {start_epoch} "
+                  f"(step {global_step}, best {iou_key}={best_iou:.3f})")
 
     total_steps = max(cfg.world_model.epochs * len(train_dl), 1)
     summary: dict[str, float] = {}
@@ -337,17 +349,25 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
 
             raw_model = unwrap_model(model)
             metrics = {"val_loss": val_loss, "train_loss": train_loss, **iou_log}
-            extra = {"ema": ema.state_dict()} if ema is not None else None
+            # Select on IOU — the metric the project is judged on. val_loss is an
+            # adequate proxy for the U-Net (weighted BCE tracks IOU) but for the
+            # diffusion model it is epsilon-MSE, orthogonal to sample quality, so
+            # selecting on it ships an essentially arbitrary epoch.
+            improved = target_iou > best_iou
+            if improved:
+                best_iou, best_val, bad_epochs = target_iou, val_loss, 0
+            else:
+                bad_epochs += 1
+            extra = {"bad_epochs": bad_epochs}
+            if ema is not None:
+                extra["ema"] = ema.state_dict()
             save_checkpoint(ckpt_dir / "last.pt", raw_model, cfg, epoch=epoch,
                             optimizer=opt, scaler=scaler if use_amp else None,
                             metrics=metrics, extra=extra)
-            if val_loss < best_val:
-                best_val, best_iou, bad_epochs = val_loss, target_iou, 0
+            if improved:
                 save_checkpoint(ckpt_dir / "best.pt", raw_model, cfg, epoch=epoch,
                                 optimizer=opt, scaler=scaler if use_amp else None,
                                 metrics=metrics, extra=extra)
-            else:
-                bad_epochs += 1
             summary = metrics
 
         # Put the live weights back before the next epoch trains on them.
