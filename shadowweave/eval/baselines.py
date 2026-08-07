@@ -163,6 +163,43 @@ class LeadTimeTracker:
         self._pending = keep
         self._pending.append((step, np.asarray(pred), current))
 
+    @staticmethod
+    def _grid2d(a) -> np.ndarray:
+        if isinstance(a, torch.Tensor):
+            a = a.detach().cpu().numpy()
+        a = np.asarray(a)
+        return a.reshape(a.shape[-2], a.shape[-1])
+
+    def log_due(self, horizon_s: float, model_pred, truth, observed_at_issue) -> None:
+        """Pose-consistent lead-time logging for one horizon as it comes due.
+
+        All three grids MUST be in the same (issue) pose: ``truth`` is the future
+        occupancy rendered in the pose the prediction was issued from, ``observed_at_issue``
+        is what was observed then, and ``model_pred`` is the prediction for this horizon.
+        This supersedes ``observe`` in the eval path: observe compared the current-pose
+        obs["bev_occupancy"] against issue-pose predictions, so as the agent moved/turned
+        between issue and detection it measured lead time across mismatched ego frames —
+        the same frame mismatch the IOU path documents fixing. run_eval already renders
+        issue-pose truth for IOU; this reuses it.
+
+        An "arrival" is a cell occupied in the future truth but not observed-occupied at
+        issue; if the prediction put probability on those cells the object was flagged
+        ``horizon_s`` seconds ahead.
+        """
+        pred = self._grid2d(model_pred)
+        truth_b = self._grid2d(truth) > self.threshold
+        obs_b = self._grid2d(observed_at_issue) > self.threshold
+        arrived = truth_b & (~obs_b)
+        if int(arrived.sum()) < self.min_new_cells:
+            return
+        if float((pred[arrived] > self.threshold).mean()) > 0.5:
+            self.lead_times.append(float(horizon_s))
+        else:
+            self.missed += 1
+        quiet = (~truth_b) & (~obs_b)
+        if bool(quiet.any()):
+            self._false_alarms.append(float((pred[quiet] > self.threshold).mean()))
+
     def summary(self) -> dict[str, float]:
         if not self.lead_times and not self.missed:
             return {}
