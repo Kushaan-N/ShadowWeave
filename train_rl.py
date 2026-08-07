@@ -210,8 +210,13 @@ def make_env_class(cfg: DictConfig, device: torch.device):
             progress = (prev_d - cur_d) / (max_dist + 1e-8)
 
             self._prev_pos = pos.copy()
+            # Audio load: fraction of the 9 zones loud enough to sound. The uncertainty
+            # grid is the first grid_cells entries of the observation.
+            n_zones = cfg.shadow.grid_cells
+            audio_load = float((obs[:n_zones] >= cfg.audio.cue_threshold).mean())
             reward = compute_reward(collision, moved_norm, cfg,
-                                    progress=progress, shadow_exposure=shadow_exposure)
+                                    progress=progress, shadow_exposure=shadow_exposure,
+                                    audio_load=audio_load)
 
             terminated = cur_d < 0.5
             if terminated:
