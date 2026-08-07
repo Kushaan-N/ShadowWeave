@@ -160,12 +160,16 @@ def main() -> None:
           f"epoch={ckpt.get('epoch')})")
 
     try:
-        ds = RolloutDataset(cfg, args.data or cfg.data.root, split=args.split)
+        # Build the dataset (and render) from the checkpoint's config, not the live
+        # default: the model's bev.size / input_channels are fixed at training time, so
+        # a default cfg with a different grid size or channel stack would feed the model
+        # mismatched inputs. Data location still comes from the CLI/live cfg.
+        ds = RolloutDataset(wm_cfg, args.data or cfg.data.root, split=args.split)
     except (FileNotFoundError, ValueError) as e:
         print(f"Cannot load {args.split} rollouts: {str(e)[:120]}")
         raise SystemExit(1)
 
-    written = render_samples(cfg, model, ds, device, args.n, out_dir)
+    written = render_samples(wm_cfg, model, ds, device, args.n, out_dir)
     curve = render_curve(ckpt, out_dir)
     for p in written + ([curve] if curve else []):
         print(f"  wrote {p}")
