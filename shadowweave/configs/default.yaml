@@ -93,6 +93,7 @@ agents:
     reward_progress_weight: 5.0
     reward_shadow_weight: -0.5
     reward_audio_clarity_weight: -2.0
+    reward_goal_bonus: 10.0   # one-off reward for reaching the goal (terminated)
     max_simultaneous_cues: 3
     checkpoint_dir: "checkpoints/local_agent"
 
