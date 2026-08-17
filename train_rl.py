@@ -67,7 +67,13 @@ def _local_agent_policy_class():
             # LocalAgent: net -> action mean (Tanh-bounded), value_head -> state value,
             # plus a state-independent log_std for the diagonal Gaussian.
             self.agent = LocalAgent(self._sw_cfg)
-            self.log_std = nn.Parameter(torch.zeros(int(self.action_space.shape[0])))
+            # std = exp(-1.6) ~ 0.2, a fifth of the [-1,1] action half-width. Starting at
+            # log_std=0 (std=1) meant sampled actions saturated the range and were clipped,
+            # so the executed action bore little relation to the optimised mean — half the
+            # rollout was noise and clip_fraction sat at ~0.46.
+            self.log_std = nn.Parameter(
+                torch.full((int(self.action_space.shape[0]),), -1.6)
+            )
             self.optimizer = self.optimizer_class(
                 self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
             )
@@ -153,9 +159,9 @@ def make_env_class(cfg: DictConfig, device: torch.device):
             self.observation_space = gym.spaces.Box(-np.inf, np.inf, shape=(obs_dim,), dtype=np.float32)
             self.action_space = gym.spaces.Box(-1.0, 1.0, shape=(3,), dtype=np.float32)
             self._step_count = 0
+            self._episode = 0
             self._prev_pos = np.zeros(2, dtype=np.float32)
             self._prev_bev: torch.Tensor | None = None
-            self._goal = np.zeros(2, dtype=np.float32)
 
         @torch.no_grad()
         def _make_obs(self, obs_dict) -> tuple[np.ndarray, float]:
@@ -182,13 +188,16 @@ def make_env_class(cfg: DictConfig, device: torch.device):
             return np.concatenate([uncertainty, wm_zones]).astype(np.float32), shadow_exposure
 
         def reset(self, *, seed=None, options=None):
-            obs_dict = self.env.reset(seed=seed if seed is not None else self.rank)
+            # SB3 auto-resets with no seed after every episode. Forcing seed=self.rank
+            # then replayed one fixed layout for the whole run; derive a distinct
+            # per-episode seed instead so each env sees varied rooms while staying
+            # reproducible across runs.
+            ep_seed = seed if seed is not None else self.rank * 100_003 + self._episode
+            obs_dict = self.env.reset(seed=ep_seed)
+            self._episode += 1
             self._step_count = 0
             self._prev_bev = None
             self._prev_pos = obs_dict["agent_pos"].copy()
-            half = cfg.sim.room_size / 2 - 0.5
-            self._goal = np.array([-self._prev_pos[0], -self._prev_pos[1]], dtype=np.float32)
-            self._goal = np.clip(self._goal, -half, half)
             obs, _ = self._make_obs(obs_dict)
             return obs, {}
 
@@ -204,23 +213,26 @@ def make_env_class(cfg: DictConfig, device: torch.device):
             moved = float(np.linalg.norm(pos - self._prev_pos))
             max_dist = cfg.sim.agent_max_speed * np.sqrt(2)
             moved_norm = min(moved / (max_dist + 1e-8), 1.0)
-
-            prev_d = float(np.linalg.norm(self._prev_pos - self._goal))
-            cur_d = float(np.linalg.norm(pos - self._goal))
-            progress = (prev_d - cur_d) / (max_dist + 1e-8)
-
             self._prev_pos = pos.copy()
-            # Audio load: fraction of the 9 zones loud enough to sound. The uncertainty
-            # grid is the first grid_cells entries of the observation.
+
+            # Reactive collision-avoider: the reward uses only terms the policy can
+            # actually observe (collision, shadow exposure, audio load). Goal-relative
+            # progress (weight 5) and the +10 goal bonus lived here before, but the goal
+            # is absent from the 45-dim observation AND from the eval loop — the A* global
+            # planner owns goal-seeking, not this policy. Rewarding an unobservable goal
+            # left the return uncorrelated with the obs: the critic could not fit it
+            # (explained_variance ~0.1), advantages were noise, and the only obs-correlated
+            # positive term (efficiency = move fast, any direction) drove the deterministic
+            # eval action to saturate — navigating worse than an untrained net.
             n_zones = cfg.shadow.grid_cells
             audio_load = float((obs[:n_zones] >= cfg.audio.cue_threshold).mean())
             reward = compute_reward(collision, moved_norm, cfg,
-                                    progress=progress, shadow_exposure=shadow_exposure,
+                                    shadow_exposure=shadow_exposure,
                                     audio_load=audio_load)
 
-            terminated = cur_d < 0.5
-            if terminated:
-                reward += cfg.agents.local.reward_goal_bonus
+            # A collision ends the episode; otherwise a policy can sit inside an obstacle
+            # banking the dense per-step terms and out-earning the one-off -10.
+            terminated = collision
             truncated = self._step_count >= cfg.sim.max_episode_steps
             return obs, reward, terminated, truncated, {"collision": collision}
 
@@ -233,7 +245,7 @@ def make_env_class(cfg: DictConfig, device: torch.device):
 def train_ppo(cfg: DictConfig, n_steps: int = 1_000_000) -> None:
     try:
         from stable_baselines3 import PPO
-        from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv
+        from stable_baselines3.common.vec_env import DummyVecEnv, SubprocVecEnv, VecMonitor
     except ImportError:
         raise ImportError("stable-baselines3 + gymnasium required — pip install stable-baselines3 gymnasium")
 
@@ -253,6 +265,11 @@ def train_ppo(cfg: DictConfig, n_steps: int = 1_000_000) -> None:
         venv = SubprocVecEnv(env_fns, start_method=cfg.agents.local.ppo_start_method)
     else:
         venv = DummyVecEnv(env_fns)
+
+    # Without a Monitor, SB3 never records episode returns/lengths, so ep_rew_mean and
+    # ep_len_mean never appear in the log — which is exactly why the broken run gave no
+    # sign it was failing. VecMonitor restores those, our primary learning signal.
+    venv = VecMonitor(venv)
 
     ckpt_dir = pathlib.Path(cfg.agents.local.checkpoint_dir)
     ckpt_dir.mkdir(parents=True, exist_ok=True)
