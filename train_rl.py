@@ -67,12 +67,13 @@ def _local_agent_policy_class():
             # LocalAgent: net -> action mean (Tanh-bounded), value_head -> state value,
             # plus a state-independent log_std for the diagonal Gaussian.
             self.agent = LocalAgent(self._sw_cfg)
-            # std = exp(-1.6) ~ 0.2, a fifth of the [-1,1] action half-width. Starting at
-            # log_std=0 (std=1) meant sampled actions saturated the range and were clipped,
-            # so the executed action bore little relation to the optimised mean — half the
-            # rollout was noise and clip_fraction sat at ~0.46.
+            # std = exp(-0.7) ~ 0.5, half the [-1,1] action half-width. log_std=0 (std=1)
+            # saturated the action range so samples were clipped and the executed action
+            # bore little relation to the optimised mean; log_std=-1.6 (std~0.2) over-
+            # corrected — a std that small makes any mean shift a large probability ratio,
+            # pinning clip_fraction near 0.5. ~0.5 balances exploration against stable ratios.
             self.log_std = nn.Parameter(
-                torch.full((int(self.action_space.shape[0]),), -1.6)
+                torch.full((int(self.action_space.shape[0]),), -0.7)
             )
             self.optimizer = self.optimizer_class(
                 self.parameters(), lr=lr_schedule(1), **self.optimizer_kwargs
