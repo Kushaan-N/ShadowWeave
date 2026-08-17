@@ -1,7 +1,8 @@
 """Local reactive agent - MLP policy at 20Hz, trained with PPO.
 
 Input:  current uncertainty vector (9,) + world model zone predictions (T*9 floats)
-Output: navigation actions - (forward_vel, strafe_vel, turn_rate) in [-1, 1]
+Output: navigation actions - (forward_vel, strafe_vel, turn_rate); the environment
+        clips each component to [-1, 1] before applying it.
 
 Audio cues are computed downstream by CueMapper from the uncertainty grid; the agent
 emits navigation only. The orchestrator used to treat this 3-vector as if it were a
@@ -36,7 +37,8 @@ class LocalAgent(nn.Module):
 
     Primary method: forward(obs) -> nav_action
     Input:  obs (B, obs_dim) float32 - uncertainty grid + world model zone predictions
-    Output: nav_action (B, 3) float32 - (forward_vel, strafe_vel, turn_rate) in [-1, 1]
+    Output: nav_action (B, 3) float32 - (forward_vel, strafe_vel, turn_rate), unbounded;
+            the environment clips to [-1, 1] when applying the action.
     """
 
     def __init__(self, cfg: DictConfig, obs_dim: int | None = None) -> None:
@@ -49,7 +51,11 @@ class LocalAgent(nn.Module):
         layers: list[nn.Module] = [nn.Linear(self.obs_dim, d), nn.LayerNorm(d), nn.GELU()]
         for _ in range(n_layers - 1):
             layers += [nn.Linear(d, d), nn.LayerNorm(d), nn.GELU()]
-        layers += [nn.Linear(d, NAV_ACTION_DIM), nn.Tanh()]
+        # No Tanh on the head: PPO's Gaussian is unsquashed, so a Tanh-bounded mean
+        # combined with an unbounded sample only piled probability mass at ±1 and made
+        # the deployed deterministic mean diverge from the optimised distribution. The
+        # environment clips the action to [-1, 1] itself (mujoco_env._move_agent).
+        layers += [nn.Linear(d, NAV_ACTION_DIM)]
         self.net = nn.Sequential(*layers)
 
         self.value_head = nn.Sequential(
@@ -113,7 +119,8 @@ if __name__ == "__main__":
     nav_action = agent.act(dummy_obs)
     print(f"  obs: {dummy_obs.shape} -> nav_action: {nav_action.shape} (forward, strafe, turn)")
     assert nav_action.shape == (NAV_ACTION_DIM,)
-    assert np.all(np.abs(nav_action) <= 1.0)
+    # The head is unbounded now (the env clips); just require finite output.
+    assert np.all(np.isfinite(nav_action))
 
     print(f"  reward (clear, moving):    {compute_reward(False, 0.8, cfg, progress=0.1):.2f}")
     print(f"  reward (collision):        {compute_reward(True, 0.8, cfg, progress=0.1):.2f}")
