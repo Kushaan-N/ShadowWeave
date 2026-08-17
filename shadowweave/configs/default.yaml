@@ -89,6 +89,13 @@ agents:
     ppo_start_method: "spawn"
     allow_random_world_model: false  # true = deliberately train/eval against an untrained world model
     reward_collision_weight: -10.0
+    # Per-step survival reward. Set above the worst-case per-step penalty (shadow 0.5 +
+    # audio 2.0 = 2.5) so every surviving step is net non-negative: staying alive always
+    # beats colliding. Without it the reactive reward was all-negative and, because a
+    # collision ends the episode, the policy learned to crash early to stop the penalty
+    # bleeding (ep_len collapsed 117 -> 13). The constant offset does not change the
+    # relative shaping — shadow/audio still steer WHERE to go — only survive-vs-die.
+    reward_alive_weight: 3.0
     # 0.0: the local agent is a reactive collision-avoider and does not observe a goal, so
     # a direction-agnostic "reward any motion" term just paid for wandering and collapsed
     # path_efficiency. Goal-seeking is the A* global planner's job. See train_rl.step().
