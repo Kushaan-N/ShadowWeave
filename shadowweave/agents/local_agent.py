@@ -97,7 +97,11 @@ def compute_reward(
     """
     r = 0.0
     if collision:
+        # A collision ends the episode (train_rl.step); it earns the penalty but not the
+        # survival reward, so crashing is always worse than living.
         r += cfg.agents.local.reward_collision_weight
+    else:
+        r += cfg.agents.local.get("reward_alive_weight", 0.0)
     r += cfg.agents.local.reward_efficiency_weight * distance_moved
     r += cfg.agents.local.reward_progress_weight * progress
     r += cfg.agents.local.reward_shadow_weight * shadow_exposure
