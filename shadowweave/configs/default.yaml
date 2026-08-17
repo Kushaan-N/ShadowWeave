@@ -89,11 +89,14 @@ agents:
     ppo_start_method: "spawn"
     allow_random_world_model: false  # true = deliberately train/eval against an untrained world model
     reward_collision_weight: -10.0
-    reward_efficiency_weight: 1.0
-    reward_progress_weight: 5.0
+    # 0.0: the local agent is a reactive collision-avoider and does not observe a goal, so
+    # a direction-agnostic "reward any motion" term just paid for wandering and collapsed
+    # path_efficiency. Goal-seeking is the A* global planner's job. See train_rl.step().
+    reward_efficiency_weight: 0.0
+    reward_progress_weight: 5.0   # unused: goal-relative reward removed from train_rl.step()
     reward_shadow_weight: -0.5
     reward_audio_clarity_weight: -2.0
-    reward_goal_bonus: 10.0   # one-off reward for reaching the goal (terminated)
+    reward_goal_bonus: 10.0   # unused: goal termination/bonus removed from train_rl.step()
     max_simultaneous_cues: 3
     checkpoint_dir: "checkpoints/local_agent"
 
