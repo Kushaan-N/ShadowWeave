@@ -84,6 +84,13 @@ def evaluate(ckpt_path: str, data_root: str, split: str, cfg,
         mask = (vis < 0.5)                                  # (B, S, S) True = shadow
 
         pred = model.predict(x)                             # (B, T, S, S) sigmoid probs
+        if nb == 0:
+            # Guard the multi-checkpoint reruns: if this data dir was generated with a
+            # different horizon set than the checkpoint was trained on, pred[:,h] and
+            # target[:,h] would silently misalign (or IndexError). Fail loudly instead.
+            assert pred.shape[1] == T and target.shape[1] == T, (
+                f"horizon count mismatch: pred {tuple(pred.shape)}, target "
+                f"{tuple(target.shape)}, expected T={T} from checkpoint prediction_horizons")
         empty = torch.zeros_like(occ)
         for h in range(T):
             model_sh[h].append(float(masked_iou(pred[:, h], target[:, h], mask).mean()))
