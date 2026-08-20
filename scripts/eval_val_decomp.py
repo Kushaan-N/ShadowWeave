@@ -190,7 +190,28 @@ def evaluate(ckpt_path, data_root, split, cfg, batch_size, max_batches, device):
             "dynamic_recall_model": _ratio(int(acc["dyn_i_m"][h]), int(acc["dyn_t"][h])),
             "shadow_fp_rate_model": _ratio(int(acc["never_m"][h]), int(n_never)),
             "shadow_fp_rate_persist": _ratio(int(acc["never_p"][h]), int(n_never)),
-            "n_dynamic_target_cells": int(acc["dyn_t"][h])}
+            "n_dynamic_target_cells": int(acc["dyn_t"][h]),
+            # Pooled (micro-averaged) shadow IOU assembled from the same counters —
+            # immune to the empty-union=1.0 credit that inflates the per-frame macro
+            # numbers in eval_summary.json.  inter = TP on STATIC (always-occupied, so
+            # every predicted-positive is a TP) + TP on DYNAMIC; union = all target
+            # positives + all predicted positives - inter, which reduces to
+            # n_static + never_fp + dyn_union.
+            "micro_shadow_iou_model": _ratio(
+                int(acc["static_m"][h] + acc["dyn_i_m"][h]),
+                int(n_static) + int(acc["never_m"][h]) + int(acc["dyn_u_m"][h])),
+            "micro_shadow_iou_persist": _ratio(
+                int(acc["static_p"][h] + acc["dyn_i_p"][h]),
+                int(n_static) + int(acc["never_p"][h]) + int(acc["dyn_u_p"][h])),
+            # Same, excluding every persistently-occupied hidden cell (walls, static
+            # obstacles, settled debris) — isolates dynamic forecasting from
+            # completion of persistent structure.
+            "micro_shadow_iou_nostatic_model": _ratio(
+                int(acc["dyn_i_m"][h]),
+                int(acc["dyn_u_m"][h]) + int(acc["never_m"][h])),
+            "micro_shadow_iou_nostatic_persist": _ratio(
+                int(acc["dyn_i_p"][h]),
+                int(acc["dyn_u_p"][h]) + int(acc["never_p"][h]))}
         cal = {}
         for r in regions:
             c, sp, st, ssq = hist[r][h]
