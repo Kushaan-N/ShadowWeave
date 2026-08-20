@@ -37,11 +37,15 @@ REMAINING=$(( TOTAL - SEED0 ))
 
 echo "shard ${SHARD}/${NSHARDS}: ${PER_SHARD} episodes, split=${SPLIT}, seed0=${SEED0}"
 
+# SW_OVERRIDES is forwarded so a caller can, e.g., pin a single difficulty tier
+# (eval.difficulty_tiers=[moving]) to build a clean per-tier val set instead of the
+# default static/moving/debris cycle.
 srun python -m shadowweave.sim.synthetic_data \
   --episodes "${PER_SHARD}" \
   --split "${SPLIT}" \
   --steps "${STEPS}" \
   --seed0 "${SEED0}" \
-  --out "${SW_DATA_ROOT:-data/rollouts}"
+  --out "${SW_DATA_ROOT:-data/rollouts}" \
+  --overrides ${SW_OVERRIDES:-}
 
 echo "shard ${SHARD} done"
