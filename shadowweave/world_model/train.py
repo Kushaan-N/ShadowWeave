@@ -232,6 +232,7 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
 
     iou_key = f"iou_{cfg.eval.iou_horizon:g}s"
     start_epoch, best_iou, best_val, bad_epochs, global_step = 0, -1.0, float("inf"), 0, 0
+    epoch = cfg.world_model.epochs - 1  # final.pt stamp if the loop body never runs
     if resume and pathlib.Path(resume).exists():
         state = load_checkpoint(resume, map_location=device)
         unwrap_model(model).load_state_dict(state["model"])
@@ -388,7 +389,7 @@ def train(cfg: DictConfig, data_dir: str, resume: Optional[str] = None) -> dict[
         raw_model = unwrap_model(model)
         if ema is not None:
             ema.copy_to(raw_model)  # ship the averaged weights
-        save_checkpoint(ckpt_dir / "final.pt", raw_model, cfg, epoch=cfg.world_model.epochs - 1,
+        save_checkpoint(ckpt_dir / "final.pt", raw_model, cfg, epoch=epoch,
                         metrics=summary)
         print(f"Training done. Best val loss: {best_val:.4f}  IOU@{cfg.eval.iou_horizon}s: {best_iou:.3f}")
         if wandb is not None:
