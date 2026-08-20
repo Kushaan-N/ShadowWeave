@@ -78,8 +78,26 @@ def _equal_mass_ece(count, sum_prob, sum_truth):
     return {"ece": ece, "n": N, "bins": out_bins}
 
 
+def _bootstrap_ci(num_m, den_m, num_p, den_p, n_boot, seed):
+    """Cluster (per-episode) bootstrap CI on a micro-averaged gain (model minus persistence).
+
+    Each argument is a per-episode (E,) integer count array for one horizon; the gain is a
+    ratio of pooled sums. Resampling EPISODES with replacement (not frames — frames within an
+    episode share geometry/pose and are correlated) and recomputing the pooled ratio gives an
+    honest CI. Bootstrap the PAIRED difference within each replicate (model and persistence are
+    positively correlated across episodes). Returns [p2.5, p97.5] or None if disabled."""
+    if not n_boot:
+        return None
+    E = len(num_m)
+    rng = np.random.default_rng(seed)
+    M = rng.multinomial(E, np.full(E, 1.0 / E), size=n_boot)   # (n_boot, E) resample weights
+    g = (M @ num_m) / np.maximum(M @ den_m, 1) - (M @ num_p) / np.maximum(M @ den_p, 1)
+    return [float(np.percentile(g, 2.5)), float(np.percentile(g, 97.5))]
+
+
 @torch.no_grad()
-def evaluate(ckpt_path, data_root, split, cfg, batch_size, max_batches, device):
+def evaluate(ckpt_path, data_root, split, cfg, batch_size, max_batches, device,
+             n_boot=10000, boot_seed=0):
     ckpt = pathlib.Path(ckpt_path)
     wm_cfg = config_from_checkpoint(ckpt, cfg)
     model = build_world_model(wm_cfg).to(device)
@@ -93,16 +111,17 @@ def evaluate(ckpt_path, data_root, split, cfg, batch_size, max_batches, device):
     n = len(ds)
     print(f"validation samples: {n}")
 
-    # --- A1 integer accumulators (micro-average) ---
-    z = lambda: torch.zeros(T, dtype=torch.long)
-    n_static = torch.zeros((), dtype=torch.long)
-    n_dynamic = torch.zeros((), dtype=torch.long)
-    n_never = torch.zeros((), dtype=torch.long)
-    n_shadow = torch.zeros((), dtype=torch.long)
-    acc = {k: z() for k in [
-        "static_m", "dyn_i_m", "dyn_u_m", "dyn_t", "never_m",   # model
-        "static_p", "dyn_i_p", "dyn_u_p", "never_p",            # persistence
-    ]}
+    # --- A1 integer accumulators, kept PER EPISODE so the gains can carry a per-episode
+    # bootstrap CI. Summing over episodes reproduces the global pool bit-for-bit. Episode id
+    # is the dataset file index fi; E = number of episode files. ---
+    E = max((fi for fi, _ in ds._index), default=-1) + 1
+    KEYS = ["static_m", "dyn_i_m", "dyn_u_m", "dyn_t", "never_m",   # model
+            "static_p", "dyn_i_p", "dyn_u_p", "never_p"]           # persistence
+    per = {k: np.zeros((E, T), dtype=np.int64) for k in KEYS}
+    ep_static = np.zeros(E, dtype=np.int64)
+    ep_dynamic = np.zeros(E, dtype=np.int64)
+    ep_never = np.zeros(E, dtype=np.int64)
+    n_shadow_total = 0
 
     # --- B calibration fine-histograms: region -> horizon -> [count, sum_prob, sum_truth, sum_sq] ---
     regions = ["shadow", "observed", "shadow_nowall"]
@@ -112,9 +131,10 @@ def evaluate(ckpt_path, data_root, split, cfg, batch_size, max_batches, device):
     nb = 0
     for start in range(0, n, batch_size):
         idxs = range(start, min(start + batch_size, n))
-        xs, tgts, occs, viss = [], [], [], []
+        xs, tgts, occs, viss, fis = [], [], [], [], []
         for i in idxs:
             fi, t = ds._index[i]
+            fis.append(fi)
             xs.append(ds[i]["input"])
             tgts.append(torch.from_numpy(np.ascontiguousarray(ds._get_map(fi, "target")[t])).float())
             occs.append(torch.from_numpy(np.ascontiguousarray(ds._get_map(fi, "bev_occupancy")[t])).float())
@@ -134,23 +154,29 @@ def evaluate(ckpt_path, data_root, split, cfg, batch_size, max_batches, device):
         STATIC = shadow & always
         DYNAMIC = shadow & ever & (~always)
         NEVER = shadow & (~ever)
-        n_static += STATIC.sum().cpu(); n_dynamic += DYNAMIC.sum().cpu()
-        n_never += NEVER.sum().cpu(); n_shadow += shadow.sum().cpu()
+        fis_arr = np.asarray(fis)
+        _cells = lambda m: m.sum(dim=(-2, -1)).cpu().numpy()   # per-sample cell count -> (B,)
+        np.add.at(ep_static, fis_arr, _cells(STATIC))
+        np.add.at(ep_dynamic, fis_arr, _cells(DYNAMIC))
+        np.add.at(ep_never, fis_arr, _cells(NEVER))
+        n_shadow_total += int(shadow.sum())
 
         pm = pred > 0.5                                     # (B,T,S,S)
         pp = (occ > 0.5).unsqueeze(1).expand(-1, T, -1, -1) # persistence carried forward
         for h in range(T):
             th = tb[:, h]
             mh, ph = pm[:, h], pp[:, h]
-            acc["static_m"][h] += (mh & STATIC).sum().cpu()
-            acc["dyn_i_m"][h] += (mh & th & DYNAMIC).sum().cpu()
-            acc["dyn_u_m"][h] += ((mh | th) & DYNAMIC).sum().cpu()
-            acc["dyn_t"][h] += (th & DYNAMIC).sum().cpu()
-            acc["never_m"][h] += (mh & NEVER).sum().cpu()
-            acc["static_p"][h] += (ph & STATIC).sum().cpu()
-            acc["dyn_i_p"][h] += (ph & th & DYNAMIC).sum().cpu()
-            acc["dyn_u_p"][h] += ((ph | th) & DYNAMIC).sum().cpu()
-            acc["never_p"][h] += (ph & NEVER).sum().cpu()
+            def scat(key, mask):
+                np.add.at(per[key], (fis_arr, h), _cells(mask))
+            scat("static_m", mh & STATIC)
+            scat("dyn_i_m", mh & th & DYNAMIC)
+            scat("dyn_u_m", (mh | th) & DYNAMIC)
+            scat("dyn_t", th & DYNAMIC)
+            scat("never_m", mh & NEVER)
+            scat("static_p", ph & STATIC)
+            scat("dyn_i_p", ph & th & DYNAMIC)
+            scat("dyn_u_p", (ph | th) & DYNAMIC)
+            scat("never_p", ph & NEVER)
 
             # --- calibration accumulation (compute directly on masked vectors) ---
             prob_h = pred[:, h]
@@ -172,46 +198,56 @@ def evaluate(ckpt_path, data_root, split, cfg, batch_size, max_batches, device):
             break
 
     # --- assemble output ---
-    out = {"horizons": horizons,
+    # Point estimates = sum the per-episode arrays over episodes (identical to the old global
+    # pool). CIs come from resampling episodes (the rows of per[...]/ep_*).
+    tot = {k: per[k].sum(axis=0) for k in KEYS}            # (T,)
+    n_static, n_dynamic, n_never = int(ep_static.sum()), int(ep_dynamic.sum()), int(ep_never.sum())
+    out = {"horizons": horizons, "n_episodes": int(E), "n_bootstrap": int(n_boot),
            "region_fraction": {
-               "static": _ratio(int(n_static), int(n_shadow)),
-               "dynamic": _ratio(int(n_dynamic), int(n_shadow)),
-               "never": _ratio(int(n_never), int(n_shadow)),
-               "n_shadow_cells": int(n_shadow)},
+               "static": _ratio(n_static, n_shadow_total),
+               "dynamic": _ratio(n_dynamic, n_shadow_total),
+               "never": _ratio(n_never, n_shadow_total),
+               "n_shadow_cells": int(n_shadow_total)},
            "decomposition": {}, "calibration": {}}
 
     for h, hs in enumerate(horizons):
         lab = f"{hs}s"
+        # micro shadow gain (model minus persistence) and its walls-excluded variant, each
+        # with a per-episode bootstrap CI. inter = TP on STATIC + TP on DYNAMIC; union =
+        # n_static + never_fp + dyn_union (see the derivation below).
+        msi_m = _ratio(int(tot["static_m"][h] + tot["dyn_i_m"][h]),
+                       n_static + int(tot["never_m"][h]) + int(tot["dyn_u_m"][h]))
+        msi_p = _ratio(int(tot["static_p"][h] + tot["dyn_i_p"][h]),
+                       n_static + int(tot["never_p"][h]) + int(tot["dyn_u_p"][h]))
+        nsi_m = _ratio(int(tot["dyn_i_m"][h]), int(tot["dyn_u_m"][h]) + int(tot["never_m"][h]))
+        nsi_p = _ratio(int(tot["dyn_i_p"][h]), int(tot["dyn_u_p"][h]) + int(tot["never_p"][h]))
         out["decomposition"][lab] = {
-            "static_coverage_model": _ratio(int(acc["static_m"][h]), int(n_static)),
-            "static_coverage_persist": _ratio(int(acc["static_p"][h]), int(n_static)),
-            "dynamic_iou_model": _ratio(int(acc["dyn_i_m"][h]), int(acc["dyn_u_m"][h])),
-            "dynamic_iou_persist": _ratio(int(acc["dyn_i_p"][h]), int(acc["dyn_u_p"][h])),
-            "dynamic_recall_model": _ratio(int(acc["dyn_i_m"][h]), int(acc["dyn_t"][h])),
-            "shadow_fp_rate_model": _ratio(int(acc["never_m"][h]), int(n_never)),
-            "shadow_fp_rate_persist": _ratio(int(acc["never_p"][h]), int(n_never)),
-            "n_dynamic_target_cells": int(acc["dyn_t"][h]),
-            # Pooled (micro-averaged) shadow IOU assembled from the same counters —
-            # immune to the empty-union=1.0 credit that inflates the per-frame macro
-            # numbers in eval_summary.json.  inter = TP on STATIC (always-occupied, so
-            # every predicted-positive is a TP) + TP on DYNAMIC; union = all target
-            # positives + all predicted positives - inter, which reduces to
-            # n_static + never_fp + dyn_union.
-            "micro_shadow_iou_model": _ratio(
-                int(acc["static_m"][h] + acc["dyn_i_m"][h]),
-                int(n_static) + int(acc["never_m"][h]) + int(acc["dyn_u_m"][h])),
-            "micro_shadow_iou_persist": _ratio(
-                int(acc["static_p"][h] + acc["dyn_i_p"][h]),
-                int(n_static) + int(acc["never_p"][h]) + int(acc["dyn_u_p"][h])),
-            # Same, excluding every persistently-occupied hidden cell (walls, static
-            # obstacles, settled debris) — isolates dynamic forecasting from
-            # completion of persistent structure.
-            "micro_shadow_iou_nostatic_model": _ratio(
-                int(acc["dyn_i_m"][h]),
-                int(acc["dyn_u_m"][h]) + int(acc["never_m"][h])),
-            "micro_shadow_iou_nostatic_persist": _ratio(
-                int(acc["dyn_i_p"][h]),
-                int(acc["dyn_u_p"][h]) + int(acc["never_p"][h]))}
+            "static_coverage_model": _ratio(int(tot["static_m"][h]), n_static),
+            "static_coverage_persist": _ratio(int(tot["static_p"][h]), n_static),
+            "dynamic_iou_model": _ratio(int(tot["dyn_i_m"][h]), int(tot["dyn_u_m"][h])),
+            "dynamic_iou_persist": _ratio(int(tot["dyn_i_p"][h]), int(tot["dyn_u_p"][h])),
+            "dynamic_recall_model": _ratio(int(tot["dyn_i_m"][h]), int(tot["dyn_t"][h])),
+            "shadow_fp_rate_model": _ratio(int(tot["never_m"][h]), n_never),
+            "shadow_fp_rate_persist": _ratio(int(tot["never_p"][h]), n_never),
+            "n_dynamic_target_cells": int(tot["dyn_t"][h]),
+            # Pooled (micro-averaged) shadow IOU — immune to the empty-union=1.0 credit that
+            # inflates the per-frame macro numbers in eval_summary.json.
+            "micro_shadow_iou_model": msi_m,
+            "micro_shadow_iou_persist": msi_p,
+            "micro_shadow_iou_nostatic_model": nsi_m,
+            "micro_shadow_iou_nostatic_persist": nsi_p,
+            # Headline gains + per-episode bootstrap CIs. nostatic excludes the memorizable
+            # walls, so it does not depend on wall recall — the reviewer-proof number.
+            "micro_shadow_gain": msi_m - msi_p,
+            "micro_shadow_gain_ci": _bootstrap_ci(
+                per["static_m"][:, h] + per["dyn_i_m"][:, h],
+                ep_static + per["never_m"][:, h] + per["dyn_u_m"][:, h],
+                per["static_p"][:, h] + per["dyn_i_p"][:, h],
+                ep_static + per["never_p"][:, h] + per["dyn_u_p"][:, h], n_boot, boot_seed),
+            "micro_shadow_gain_nostatic": nsi_m - nsi_p,
+            "micro_shadow_gain_nostatic_ci": _bootstrap_ci(
+                per["dyn_i_m"][:, h], per["dyn_u_m"][:, h] + per["never_m"][:, h],
+                per["dyn_i_p"][:, h], per["dyn_u_p"][:, h] + per["never_p"][:, h], n_boot, boot_seed)}
         cal = {}
         for r in regions:
             c, sp, st, ssq = hist[r][h]
@@ -231,13 +267,16 @@ def main() -> None:
     ap.add_argument("--batch-size", type=int, default=64)
     ap.add_argument("--max-batches", type=int, default=None)
     ap.add_argument("--out", type=str, default=None)
+    ap.add_argument("--bootstrap", type=int, default=10000, help="bootstrap resamples for CIs (0 disables)")
+    ap.add_argument("--boot-seed", type=int, default=0)
     ap.add_argument("--overrides", nargs="*", default=[])
     args = ap.parse_args()
 
     cfg = load_config(overrides=args.overrides)
     device = get_device()
     print(f"device: {device}")
-    out = evaluate(args.ckpt, args.data, args.split, cfg, args.batch_size, args.max_batches, device)
+    out = evaluate(args.ckpt, args.data, args.split, cfg, args.batch_size, args.max_batches, device,
+                   n_boot=args.bootstrap, boot_seed=args.boot_seed)
 
     print("\n=== decomposition (model; persistence ~0 floor) ===")
     print(f"  shadow composition: static={out['region_fraction']['static']:.3f}  "
@@ -247,6 +286,16 @@ def main() -> None:
         d = out["decomposition"][f"{hs}s"]
         print(f"{str(hs)+'s':>7} {d['static_coverage_model']:>11.3f} {d['dynamic_iou_model']:>9.3f} "
               f"{d['dynamic_recall_model']:>11.3f} {d['shadow_fp_rate_model']:>9.3f}")
+    print(f"\n=== micro shadow gain (model - persistence) with {out['n_bootstrap']} per-episode "
+          f"bootstrap over n={out['n_episodes']} episodes ===")
+    print(f"{'horizon':>7} {'gain':>8} {'95% CI':>18} | {'nostatic':>9} {'95% CI':>18}")
+    for hs in out["horizons"]:
+        d = out["decomposition"][f"{hs}s"]
+        ci = d.get("micro_shadow_gain_ci"); nci = d.get("micro_shadow_gain_nostatic_ci")
+        cis = f"[{ci[0]:+.3f}, {ci[1]:+.3f}]" if ci else "     n/a"
+        ncis = f"[{nci[0]:+.3f}, {nci[1]:+.3f}]" if nci else "     n/a"
+        print(f"{str(hs)+'s':>7} {d['micro_shadow_gain']:>+8.3f} {cis:>18} | "
+              f"{d['micro_shadow_gain_nostatic']:>+9.3f} {ncis:>18}")
     print("\n=== calibration ECE (lower better) ===")
     print(f"{'horizon':>7} {'shadow':>8} {'observed':>9} {'nowall':>8}")
     for hs in out["horizons"]:
