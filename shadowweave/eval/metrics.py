@@ -39,7 +39,12 @@ def masked_iou(
     dims = (-2, -1)
     inter = (p & t).sum(dim=dims).float()
     union = (p | t).sum(dim=dims).float()
-    return torch.where(union > 0, inter / union.clamp_min(1.0), torch.ones_like(inter))
+    score = torch.where(union > 0, inter / union.clamp_min(1.0), torch.ones_like(inter))
+
+    # Same NaN guard as ``iou``: a NaN prediction compares False everywhere, so on an
+    # empty masked union it would score a perfect 1.0 instead of exposing the failure.
+    broken = (~torch.isfinite(pred)).any(dim=dims)
+    return torch.where(broken, torch.zeros_like(score), score)
 
 
 class EvalMetrics:
