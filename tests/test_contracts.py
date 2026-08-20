@@ -129,11 +129,18 @@ class TestPlannerContract:
 
 class TestRewardContract:
     def test_collision_actually_penalises(self, cfg):
-        """The old collision flag was True every step, so reward was constant."""
+        """The old collision flag was True every step, so reward was constant.
+
+        A collision earns the penalty and forfeits the survival reward (crashing must
+        always be worse than living — see compute_reward), so the gap is the collision
+        weight minus the alive weight, not the collision weight alone.
+        """
         clear = compute_reward(False, 0.5, cfg)
         hit = compute_reward(True, 0.5, cfg)
         assert hit < clear
-        assert hit - clear == pytest.approx(cfg.agents.local.reward_collision_weight)
+        expected = (cfg.agents.local.reward_collision_weight
+                    - cfg.agents.local.get("reward_alive_weight", 0.0))
+        assert hit - clear == pytest.approx(expected)
 
     def test_shadow_exposure_is_penalised(self, cfg):
         assert compute_reward(False, 0.5, cfg, shadow_exposure=1.0) < compute_reward(False, 0.5, cfg)
