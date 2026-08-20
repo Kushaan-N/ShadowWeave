@@ -21,13 +21,21 @@ from shadowweave.console import C, bar, header, rule, status, table  # noqa: E40
 from shadowweave.utils import load_config  # noqa: E402
 
 # (label, metric key, target, comparison) — the targets from the project spec.
+# Labels say what each number actually is: the raw IOUs are per-frame macro averages
+# inflated by empty-vs-empty credit (the gains are not); collision has both a
+# per-step and a per-episode reading; the latency covers BEV + world model +
+# orchestrator forward at batch 1, not the depth network or audio synthesis; the
+# falling lead time is horizon-granular ({1,3,5,10}s buckets, so floored at 1s).
 TARGETS = [
-    ("World model IOU @ 5s", "iou_5s", 0.60, "ge"),
-    ("Shadow IOU @ 5s", "shadow_iou_5s", 0.40, "ge"),
-    ("Collision rate", "collision_rate_per_step", 0.10, "le"),
-    ("Falling-object lead time", "falling_lead_time_s", 3.0, "ge"),
-    ("Pipeline latency p95 (ms)", "latency_p95_ms", 100.0, "le"),
-    ("Calibration error", "calibration_error", 0.10, "le"),
+    ("World model IOU @ 5s (macro)", "iou_5s", 0.60, "ge"),
+    ("Gain over best baseline @ 5s", "model_gain_over_best_baseline_5s", 0.0, "ge"),
+    ("Shadow IOU @ 5s (macro)", "shadow_iou_5s", 0.40, "ge"),
+    ("Shadow gain over best baseline @ 5s", "model_shadow_gain_over_best_baseline_5s", 0.0, "ge"),
+    ("Collision rate (per-step)", "collision_rate_per_step", 0.10, "le"),
+    ("Collision rate (per-episode)", "collision_rate", 0.10, "le"),
+    ("Falling-object lead time (horizon-granular)", "falling_lead_time_s", 3.0, "ge"),
+    ("Forward-path latency p95 (ms)", "latency_p95_ms", 100.0, "le"),
+    ("Calibration error (all cells)", "calibration_error", 0.10, "le"),
 ]
 
 
@@ -97,7 +105,9 @@ def render(summary: dict, cfg) -> str:
         out += ["", rule("Falling-object anticipation"), "",
                 table(rows, ["metric", "value", ""], aligns=["l", "r", "l"]),
                 f"\n  {C.dim}a high detection rate with a high false-alarm rate means the "
-                f"model flags\n  everything, not that it anticipates anything.{C.reset}"]
+                f"model flags\n  everything, not that it anticipates anything. Events are "
+                f"per-due-prediction, not\n  per-object, and lead time is the horizon bucket "
+                f"({{1,3,5,10}}s) that fired, so it\n  is floored at 1s.{C.reset}"]
 
     # ── navigation ─────────────────────────────────────────────────────
     nav = [(k, summary[k]) for k in
