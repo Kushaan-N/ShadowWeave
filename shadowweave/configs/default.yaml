@@ -2,7 +2,20 @@ seed: 0
 deterministic: false
 
 sim:
-  room_size: 6.0          # meters, square room
+  room_size: 6.0          # meters — legacy fixed square, used when randomize_room is false
+  # Per-episode room-geometry randomization. The fixed 6x6 shell was a memorizable constant
+  # that inflated the model's persistent-structure (wall) recall; drawing width/depth per
+  # episode forces that recall to come from observation, not memorization. room_half_min=2.5
+  # keeps the min side (5 m) >= the 5 m BEV window so it never re-enters the window>>room
+  # regime. Obstacle counts scale with area to hold the ~7% positive fraction pos_weight expects.
+  # Default false so existing data/checkpoints/in-flight evals are unaffected; the randomized-
+  # geometry experiment opts in with sim.randomize_room=true (run_randgeom.sh), writing its own
+  # dataset + checkpoint so fixed vs randomized geometry are reported side by side.
+  randomize_room: false
+  room_half_min: 2.5      # m; min half-extent (room side 5.0 m)
+  room_half_max: 4.0      # m; max half-extent (room side 8.0 m)
+  room_aspect: true       # draw width and depth half-extents independently (rectangular)
+  obstacle_wall_margin: 0.6  # m; keep obstacle footprints this far inside a wall
   camera_height: 1.6      # meters
   camera_fov: 90          # degrees
   fps: 30
