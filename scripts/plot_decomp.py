@@ -2,10 +2,13 @@
 
 Reads the per-tier json written by eval_val_decomp.py (one dir per model) and produces:
   1. decomp_curves.png  — per-horizon dynamic_iou / dynamic_recall / static_coverage,
-     one line per tier, showing the forecasting signal rising static<moving<debris and
-     decaying with horizon (which the pooled shadow-IOU masked).
-  2. reliability.png     — reliability diagram at 5s, shadow vs observed, with per-bin
-     counts — the persuasive figure for "uncertainty propagation into unobserved space".
+     one line per tier with the persistence baseline dashed, showing the forecasting
+     signal decaying with horizon (which the pooled shadow-IOU masked) and that the
+     completion signal is flat.
+  2. reliability.png     — reliability diagram at 5s, shadow vs observed — the
+     persuasive figure for "uncertainty propagation into unobserved space".
+
+Figures are white-background / colorblind-safe for direct inclusion in the paper.
 
     python scripts/plot_decomp.py --dir <WS>/val_decomp/full --out figures/
 """
@@ -14,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import math
 import pathlib
 
 import matplotlib
@@ -21,8 +25,8 @@ matplotlib.use("Agg")
 import matplotlib.pyplot as plt
 
 TIERS = ["static", "moving", "debris"]
-BG = "#0d0221"
-COLORS = {"static": "#7dd3fc", "moving": "#f0abfc", "debris": "#fca5a5"}
+# Okabe-Ito, readable on white and in grayscale.
+COLORS = {"static": "#0072B2", "moving": "#D55E00", "debris": "#009E73"}
 
 
 def _load(d: pathlib.Path):
@@ -34,25 +38,41 @@ def _load(d: pathlib.Path):
     return out
 
 
+def _series(d, key):
+    hs = d["horizons"]
+    ys = [d["decomposition"][f"{h}s"].get(key, float("nan")) for h in hs]
+    return hs, ys
+
+
 def plot_curves(data, out_path):
-    metrics = [("dynamic_iou_model", "dynamic IOU (forecasting)"),
-               ("dynamic_recall_model", "dynamic recall"),
-               ("static_coverage_model", "static coverage (completion)")]
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4), facecolor=BG)
-    for ax, (key, title) in zip(axes, metrics):
+    # (model_key, persistence_key, title). Persistence is drawn dashed so the reader
+    # can see where the model beats the baseline and where it does not (debris
+    # dynamic IOU at 3-10s) — hiding that would be indefensible in review.
+    panels = [("dynamic_iou_model", "dynamic_iou_persist", "dynamic IOU in shadow\n(forecasting)"),
+              ("dynamic_recall_model", None, "dynamic recall in shadow"),
+              ("static_coverage_model", "static_coverage_persist",
+               "persistent-structure recall\n(amodal completion)")]
+    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    for ax, (mkey, pkey, title) in zip(axes, panels):
         for t, d in data.items():
-            hs = d["horizons"]
-            ys = [d["decomposition"][f"{h}s"][key] for h in hs]
-            ax.plot(hs, ys, marker="o", label=t, color=COLORS.get(t, "#fff"))
-        ax.set_title(title, color="#7dd3fc")
-        ax.set_xlabel("horizon (s)", color="#ccc"); ax.set_facecolor(BG)
-        ax.tick_params(colors="#ccc"); ax.grid(alpha=0.15)
-        for sp in ax.spines.values():
-            sp.set_color("#444")
-    axes[0].set_ylabel("score", color="#ccc")
-    axes[0].legend(facecolor=BG, edgecolor="#444", labelcolor="#ccc")
+            hs, ys = _series(d, mkey)
+            if all(isinstance(y, float) and math.isnan(y) for y in ys):
+                continue  # e.g. the static tier has no dynamic cells at all
+            ax.plot(hs, ys, marker="o", label=t, color=COLORS.get(t, "#333"))
+            if pkey:
+                _, yp = _series(d, pkey)
+                ax.plot(hs, yp, linestyle="--", marker=".", alpha=0.6,
+                        color=COLORS.get(t, "#333"))
+        ax.set_title(title, fontsize=11)
+        ax.set_xlabel("horizon (s)")
+        ax.grid(alpha=0.25)
+    axes[0].set_ylabel("score")
+    handles, labels = axes[0].get_legend_handles_labels()
+    handles.append(plt.Line2D([], [], color="#555", linestyle="--", marker="."))
+    labels.append("persistence (dashed)")
+    axes[0].legend(handles, labels, fontsize=9)
     plt.tight_layout()
-    fig.savefig(out_path, dpi=130, facecolor=BG)
+    fig.savefig(out_path, dpi=200)
     plt.close(fig)
     print(f"wrote {out_path}")
 
@@ -61,24 +81,23 @@ def plot_reliability(data, out_path):
     # Use the debris (or first available) tier's 5s reliability curve.
     tier = "debris" if "debris" in data else next(iter(data))
     cal = data[tier]["calibration"]["5s"]
-    fig, ax = plt.subplots(figsize=(5.5, 5), facecolor=BG)
-    ax.plot([0, 1], [0, 1], "--", color="#666", label="perfect")
-    for region, color in (("shadow", "#f0abfc"), ("observed", "#7dd3fc")):
+    fig, ax = plt.subplots(figsize=(5.5, 5))
+    ax.plot([0, 1], [0, 1], "--", color="#999", label="perfect")
+    for region, color in (("shadow", "#D55E00"), ("observed", "#0072B2")):
         bins = cal[region]["reliability"] or []
         if not bins:
             continue
-        xs = [b["conf"] for b in bins]; ys = [b["acc"] for b in bins]
+        xs = [b["conf"] for b in bins]
+        ys = [b["acc"] for b in bins]
         ax.plot(xs, ys, marker="o", color=color,
                 label=f"{region} (ECE={cal[region]['ece']:.3f})")
-    ax.set_title(f"reliability @5s — {tier} tier", color="#7dd3fc")
-    ax.set_xlabel("predicted probability", color="#ccc")
-    ax.set_ylabel("empirical occupancy", color="#ccc")
-    ax.set_facecolor(BG); ax.tick_params(colors="#ccc"); ax.grid(alpha=0.15)
-    for sp in ax.spines.values():
-        sp.set_color("#444")
-    ax.legend(facecolor=BG, edgecolor="#444", labelcolor="#ccc")
+    ax.set_title(f"reliability @5s — {tier} tier", fontsize=11)
+    ax.set_xlabel("predicted probability")
+    ax.set_ylabel("empirical occupancy")
+    ax.grid(alpha=0.25)
+    ax.legend(fontsize=9)
     plt.tight_layout()
-    fig.savefig(out_path, dpi=130, facecolor=BG)
+    fig.savefig(out_path, dpi=200)
     plt.close(fig)
     print(f"wrote {out_path}")
 
@@ -92,7 +111,8 @@ def main() -> None:
     data = _load(pathlib.Path(args.dir))
     if not data:
         raise SystemExit(f"no tier jsons found in {args.dir}")
-    out = pathlib.Path(args.out); out.mkdir(parents=True, exist_ok=True)
+    out = pathlib.Path(args.out)
+    out.mkdir(parents=True, exist_ok=True)
     plot_curves(data, out / "decomp_curves.png")
     plot_reliability(data, out / "reliability.png")
 
