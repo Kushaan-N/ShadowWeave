@@ -32,8 +32,13 @@ slurm/logs/*
 !slurm/logs/.gitkeep
 slurm/env.local.sh
 
-# Experiment outputs
-results*/
+# Experiment outputs — but keep the small eval summaries: they are the evidence
+# behind the write-ups and must be version-controlled (results*/* rather than
+# results*/ so git descends far enough for the exceptions to apply)
+results*/*
+!results/eval_summary.json
+!results_smoke/eval_summary.json
+!results_rl_smoke/eval_summary.json
 wandb/
 runs/
 *.sif
