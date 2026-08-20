@@ -4,12 +4,15 @@
 
 | metric | value | target | status |
 |---|---|---|---|
-| World model IOU @ 5s | 0.627 | ≥ 0.6 | ✅ |
-| Shadow IOU @ 5s | 0.744 | ≥ 0.4 | ✅ |
-| Collision rate | 0.155 | ≤ 0.1 | ❌ |
-| Falling-object lead time | 2.616 | ≥ 3 | ❌ |
-| Pipeline latency p95 (ms) | 6.999 | ≤ 100 | ✅ |
-| Calibration error | 0.045 | ≤ 0.1 | ✅ |
+| World model IOU @ 5s (macro) | 0.627 | ≥ 0.6 | ✅ |
+| Gain over best baseline @ 5s | 0.313 | ≥ 0 | ✅ |
+| Shadow IOU @ 5s (macro) | 0.744 | ≥ 0.4 | ✅ |
+| Shadow gain over best baseline @ 5s | 0.320 | ≥ 0 | ✅ |
+| Collision rate (per-step) | 0.155 | ≤ 0.1 | ❌ |
+| Collision rate (per-episode) | 0.367 | ≤ 0.1 | ❌ |
+| Falling-object lead time (horizon-granular) | 2.616 | ≥ 3 | ❌ |
+| Forward-path latency p95 (ms) | 6.999 | ≤ 100 | ✅ |
+| Calibration error (all cells) | 0.045 | ≤ 0.1 | ✅ |
 
 ## Prediction quality by horizon
 
