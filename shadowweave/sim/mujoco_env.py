@@ -56,11 +56,11 @@ _ROOM_XML_TEMPLATE = textwrap.dedent("""
   </asset>
   <worldbody>
     <light name="top" pos="0 0 3" dir="0 0 -1" diffuse="0.8 0.8 0.8"/>
-    <geom name="floor" type="plane" size="3 3 0.1" material="floor_mat"/>
-    <geom name="wall_n" type="box" pos="0 3 1.5"  size="3 0.1 1.5" rgba="0.5 0.5 0.5 1"/>
-    <geom name="wall_s" type="box" pos="0 -3 1.5" size="3 0.1 1.5" rgba="0.5 0.5 0.5 1"/>
-    <geom name="wall_e" type="box" pos="3 0 1.5"  size="0.1 3 1.5" rgba="0.5 0.5 0.5 1"/>
-    <geom name="wall_w" type="box" pos="-3 0 1.5" size="0.1 3 1.5" rgba="0.5 0.5 0.5 1"/>
+    <geom name="floor" type="plane" size="{half_x} {half_y} 0.1" material="floor_mat"/>
+    <geom name="wall_n" type="box" pos="0 {half_y} 1.5"  size="{half_x} 0.1 1.5" rgba="0.5 0.5 0.5 1"/>
+    <geom name="wall_s" type="box" pos="0 -{half_y} 1.5" size="{half_x} 0.1 1.5" rgba="0.5 0.5 0.5 1"/>
+    <geom name="wall_e" type="box" pos="{half_x} 0 1.5"  size="0.1 {half_y} 1.5" rgba="0.5 0.5 0.5 1"/>
+    <geom name="wall_w" type="box" pos="-{half_x} 0 1.5" size="0.1 {half_y} 1.5" rgba="0.5 0.5 0.5 1"/>
     <!-- agent body with freejoint — position driven by RL actions (kinematic only) -->
     <body name="agent_body" pos="0 0 {camera_height}">
       <freejoint name="agent_joint"/>
@@ -78,6 +78,9 @@ _OBSTACLE_PREFIXES = ("obs_", "mover_", "debris_", "wall_")
 
 _N_MOVERS = 3
 _N_DEBRIS = 6
+# Upper bound on scripted-body indices to scan for; counts scale up with room area
+# (max ~1.8x baseline), so this cap is comfortably above any generated count.
+_MAX_SCRIPTED = 16
 # Returned in place of a real frame when RGB rendering is switched off.
 _EMPTY_RGB = np.zeros((1, 1, 3), dtype=np.uint8)
 _EMPTY_RGB.flags.writeable = False  # shared sentinel; never mutate in place
@@ -90,11 +93,27 @@ _BODY_BAND_MARGIN = 0.4
 _DEBRIS_HOLD_Z = 6.0
 
 
-def _static_objects_xml(rng: np.random.Generator) -> str:
+# Obstacle counts scale with room area (relative to the 6x6=36 m^2 baseline) so the target's
+# positive fraction — which pos_weight is tuned to — stays roughly constant as the room grows.
+def _area_scale(half_x: float, half_y: float) -> float:
+    return (4.0 * half_x * half_y) / 36.0
+
+
+def _xy(rng, half_x, half_y, margin):
+    """A random position at least `margin` inside each wall (per-axis). One size-2 draw, to
+    match the legacy rng.uniform(-b, b, size=2) consumption so the fixed-room path stays close."""
+    hx, hy = max(half_x - margin, 0.1), max(half_y - margin, 0.1)
+    xy = rng.uniform([-hx, -hy], [hx, hy])
+    return float(xy[0]), float(xy[1])
+
+
+def _static_objects_xml(rng, half_x, half_y, margin) -> str:
     xml = ""
-    n = rng.integers(3, 6)
+    sc = _area_scale(half_x, half_y)
+    lo = max(2, round(3 * sc)); hi = max(lo + 1, round(6 * sc))
+    n = rng.integers(lo, hi)
     for i in range(int(n)):
-        x, y = rng.uniform(-2.2, 2.2, size=2)
+        x, y = _xy(rng, half_x, half_y, margin)
         s = rng.uniform(0.2, 0.45)
         hz = rng.uniform(0.3, 1.1)
         xml += (
@@ -104,18 +123,19 @@ def _static_objects_xml(rng: np.random.Generator) -> str:
     return xml
 
 
-def _moving_objects_xml(rng: np.random.Generator) -> str:
+def _moving_objects_xml(rng, half_x, half_y, margin) -> str:
     xml = ""
-    for i in range(_N_MOVERS):
-        x, y = rng.uniform(-2.0, 2.0, size=2)
+    sc = _area_scale(half_x, half_y)
+    for i in range(max(1, round(_N_MOVERS * sc))):
+        x, y = _xy(rng, half_x, half_y, margin)
         xml += f"""
     <body name="mover_{i}" pos="{x:.2f} {y:.2f} 0.5">
       <freejoint name="mover_joint_{i}"/>
       <geom type="cylinder" size="0.22 0.5" rgba="0.2 0.6 0.9 1" mass="2"/>
     </body>"""
     # A couple of static blockers so "moving" is not trivially empty.
-    for i in range(2):
-        x, y = rng.uniform(-2.2, 2.2, size=2)
+    for i in range(max(1, round(2 * sc))):
+        x, y = _xy(rng, half_x, half_y, margin)
         xml += (
             f'\n    <geom name="obs_{i}" type="box" pos="{x:.2f} {y:.2f} 0.5" '
             f'size="0.3 0.3 0.5" rgba="0.8 0.4 0.1 1"/>'
@@ -123,18 +143,19 @@ def _moving_objects_xml(rng: np.random.Generator) -> str:
     return xml
 
 
-def _debris_objects_xml(rng: np.random.Generator) -> str:
+def _debris_objects_xml(rng, half_x, half_y, margin) -> str:
     xml = ""
-    for i in range(_N_DEBRIS):
-        x, y = rng.uniform(-2.5, 2.5, size=2)
+    sc = _area_scale(half_x, half_y)
+    for i in range(max(1, round(_N_DEBRIS * sc))):
+        x, y = _xy(rng, half_x, half_y, margin)
         s = rng.uniform(0.12, 0.25)
         xml += f"""
     <body name="debris_{i}" pos="{x:.2f} {y:.2f} {_DEBRIS_HOLD_Z:.2f}">
       <freejoint name="debris_joint_{i}"/>
       <geom type="box" size="{s:.2f} {s:.2f} {s:.2f}" rgba="0.9 0.2 0.2 1" mass="1"/>
     </body>"""
-    for i in range(2):
-        x, y = rng.uniform(-2.2, 2.2, size=2)
+    for i in range(max(1, round(2 * sc))):
+        x, y = _xy(rng, half_x, half_y, margin)
         xml += (
             f'\n    <geom name="obs_{i}" type="box" pos="{x:.2f} {y:.2f} 0.4" '
             f'size="0.3 0.3 0.4" rgba="0.8 0.4 0.1 1"/>'
@@ -162,8 +183,11 @@ class ShadowWeaveEnv:
         self._model: Any = None
         self._data: Any = None
         self._renderer: Any = None
-        self._agent_pos = np.array([0.0, -2.0], dtype=np.float32)
+        self._agent_pos = np.array([0.0, 0.0], dtype=np.float32)
         self._agent_yaw = 0.0
+        # Per-episode room half-extents (X=width, Y=depth); reset() redraws them. Default to
+        # the legacy fixed square so any pre-reset read is valid.
+        self._half_x = self._half_y = float(cfg.sim.room_size) / 2.0
         self._qpos_addr = 0
         self._rng = np.random.default_rng(0)
         self._obstacle_geoms: list[int] = []
@@ -188,6 +212,17 @@ class ShadowWeaveEnv:
         # global numpy seed the way np.random.seed() did.
         self._rng = np.random.default_rng(seed)
 
+        # Draw the room geometry FIRST (before obstacles) so obstacle placement can respect
+        # it and the RNG stream is deterministic given the seed. Disjoint train/val seeds =>
+        # no exact (half_x, half_y) recurs, so wall recall must be observation-driven.
+        if self.cfg.sim.get("randomize_room", False):
+            lo, hi = float(self.cfg.sim.room_half_min), float(self.cfg.sim.room_half_max)
+            self._half_x = float(self._rng.uniform(lo, hi))
+            self._half_y = float(self._rng.uniform(lo, hi)) if self.cfg.sim.get("room_aspect", True) else self._half_x
+        else:
+            self._half_x = self._half_y = float(self.cfg.sim.room_size) / 2.0
+        margin = float(self.cfg.sim.get("obstacle_wall_margin", 0.6))
+
         difficulty = self.cfg.sim.difficulty
         builders = {
             "static": _static_objects_xml,
@@ -196,9 +231,10 @@ class ShadowWeaveEnv:
         }
         if difficulty not in builders:
             raise ValueError(f"Unknown difficulty: {difficulty}")
-        obj_xml = builders[difficulty](self._rng)
+        obj_xml = builders[difficulty](self._rng, self._half_x, self._half_y, margin)
 
         xml = _ROOM_XML_TEMPLATE.format(
+            half_x=f"{self._half_x:.3f}", half_y=f"{self._half_y:.3f}",
             # One env step must advance exactly 1/fps of simulated time, or every
             # "k second" horizon label (and the falling-object lead time) is off by
             # the mismatch — 0.01 hardcoded here meant 30 steps = 0.9s, not 1s.
@@ -280,7 +316,8 @@ class ShadowWeaveEnv:
         carries no signal. These are driven directly and reflect off the walls.
         """
         self._movers = []
-        for i in range(_N_MOVERS):
+        # Iterate a generous cap (counts scale up with room area); missing joints are skipped.
+        for i in range(_MAX_SCRIPTED):
             jid = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, f"mover_joint_{i}")
             if jid < 0:
                 continue
@@ -311,7 +348,7 @@ class ShadowWeaveEnv:
         # roll only reaches ~data.steps_per_episode + max_h*fps (~600), so debris
         # released past that never landed in any target — ~22% of the debris signal.
         span = int(self.cfg.data.steps_per_episode + horizon_s * self.cfg.sim.fps)
-        for i in range(_N_DEBRIS):
+        for i in range(_MAX_SCRIPTED):
             jid = mujoco.mj_name2id(self._model, mujoco.mjtObj.mjOBJ_JOINT, f"debris_joint_{i}")
             if jid < 0:
                 continue
@@ -330,16 +367,17 @@ class ShadowWeaveEnv:
         # passing n_substeps desynchronises the scripted bodies from the physics.
         substeps = n_substeps if n_substeps is not None else self.cfg.sim.substeps
         dt = substeps * float(self._model.opt.timestep)
-        half = self.cfg.sim.room_size / 2.0 - 0.35
+        halves = (self._half_x - 0.35, self._half_y - 0.35)
 
         for m in self._movers:
             m["pos"] = m["pos"] + m["vel"] * dt
             for ax in (0, 1):
-                if m["pos"][ax] < -half:
-                    m["pos"][ax] = -half
+                h = halves[ax]
+                if m["pos"][ax] < -h:
+                    m["pos"][ax] = -h
                     m["vel"][ax] = abs(m["vel"][ax])
-                elif m["pos"][ax] > half:
-                    m["pos"][ax] = half
+                elif m["pos"][ax] > h:
+                    m["pos"][ax] = h
                     m["vel"][ax] = -abs(m["vel"][ax])
             a = m["qadr"]
             self._data.qpos[a : a + 2] = m["pos"]
@@ -358,12 +396,12 @@ class ShadowWeaveEnv:
                 self._data.qvel[d["dofadr"] : d["dofadr"] + 6] = 0.0
 
     def _sample_free_spawn(self) -> tuple[np.ndarray, float]:
-        half = self.cfg.sim.room_size / 2.0 - 0.5
+        hx, hy = self._half_x - 0.5, self._half_y - 0.5
         for _ in range(64):
-            pos = self._rng.uniform(-half, half, size=2).astype(np.float32)
+            pos = np.array([self._rng.uniform(-hx, hx), self._rng.uniform(-hy, hy)], dtype=np.float32)
             if self._clearance(pos) > self.cfg.sim.agent_radius + 0.15:
                 return pos, float(self._rng.uniform(0, 2 * math.pi))
-        return np.array([0.0, -2.0], dtype=np.float32), 0.0
+        return np.array([0.0, 0.0], dtype=np.float32), 0.0
 
     # ------------------------------------------------------------------
     # Agent motion
@@ -389,9 +427,9 @@ class ShadowWeaveEnv:
         dx = vfwd * (-math.sin(yaw)) + vstrafe * math.cos(yaw)
         dy = vfwd * math.cos(yaw) + vstrafe * math.sin(yaw)
 
-        half = self.cfg.sim.room_size / 2.0 - 0.3
-        self._agent_pos[0] = float(np.clip(self._agent_pos[0] + dx, -half, half))
-        self._agent_pos[1] = float(np.clip(self._agent_pos[1] + dy, -half, half))
+        hx, hy = self._half_x - 0.3, self._half_y - 0.3
+        self._agent_pos[0] = float(np.clip(self._agent_pos[0] + dx, -hx, hx))
+        self._agent_pos[1] = float(np.clip(self._agent_pos[1] + dy, -hy, hy))
         self._apply_agent_pose()
 
     def _apply_agent_pose(self) -> None:
