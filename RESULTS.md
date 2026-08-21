@@ -190,6 +190,11 @@ Fails: collision rate (both definitions), falling-object lead time.
 - `decomp_curves.png` — dynamic IOU / recall and persistent-structure recall by
   horizon, model (solid) vs persistence (dashed), per tier.
 - `reliability.png` — reliability @5 s, shadow vs observed, debris tier.
+- `shadow_gain_ci.png` — micro shadow gain (left) and nostatic gain (right) vs
+  horizon, 95% bootstrap-CI bands per tier, randomized-geometry static overlaid. The
+  "every number has an error bar" figure: left shows the gain (CI clear of zero, and
+  rand-geom sits on top of fixed static → no memorization); right shows the pure-
+  forecasting residual is ~0.
 - `prediction_00..05.png` — per-sample panels: observation + shadow map, ground
   truth, forecasts at 1/3/5/10 s, error maps (red = false positive, blue = missed).
 - `val_iou.png` — validation macro IOU by horizon vs the 0.60 target (empty-credit
