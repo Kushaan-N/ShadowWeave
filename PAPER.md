@@ -184,7 +184,9 @@ evidence that uncertainty propagates faithfully into unseen space.
 
 We use a MuJoCo single-room benchmark with three difficulty tiers — **static** (fixed obstacles),
 **moving** (kinematically driven movers), and **debris** (objects that fall and settle) — with 400
-training and 80 validation episodes on disjoint seeds. The BEV is 96×96 over 5 m; horizons are
+training and 80 validation episodes on disjoint seeds; the per-tier decomposition and CI
+analyses use clean single-tier validation sets of 30 episodes (9,000 frames) each, and the
+randomized-geometry validation (§4.4) uses 80 episodes. The BEV is 96×96 over 5 m; horizons are
 1/3/5/10 s. Unless noted, fixed-geometry results use a 6×6 m room; §4.4 randomizes geometry.
 Reproducibility is pinned: the fixed-geometry scene generation is verified bit-exact against a
 golden hash, and a full rollout re-run reproduces every accuracy metric bit-identically
@@ -290,7 +292,7 @@ consumes the most recent depth frame at 20 Hz. Audio synthesis remains excluded.
 **Anticipating occupancy revealed in shadow (a falling-object *proxy*).** We measure whether the
 model flags occupancy that materializes in unobserved space before it is revealed. Cell-level
 detection is 0.787 at a horizon-granular mean lead of 2.62 s. A component-level variant that
-scores each connected arrival region gives detection 0.753 and exposes what the cell-level
+scores each connected arrival region gives detection 0.752 and exposes what the cell-level
 false-alarm rate (0.021) hides: component-level precision is only 0.714. Three definitional
 caveats apply: events are counted per due prediction (one object aloft is scored at every issue
 step and horizon it is due, not once per object); "arrival" keys on unobserved-at-issue rather
