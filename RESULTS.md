@@ -152,6 +152,7 @@ over 8 thresholds). Full fixed-val runs, 9,000 frames/tier (`$WS/val_decomp/prio
 | static | 0.102 | 0.879 | 0.723 | 0.610 @ FP 0.034 |
 | moving | 0.080 | 0.865 | 0.722 | 0.723 @ FP 0.015 |
 | debris | 0.089 | 0.869 | 0.717 | 0.670 @ FP 0.014 |
+| randomized geometry (80 eps, 24,000 frames) | 0.087 | 0.921 | 0.793 | 0.655 @ FP 0.021 |
 
 The prior can only reach high structure recall by blanketing ~72% of genuinely empty
 hidden space with false positives; its best achievable micro shadow IOU is 0.08–0.10 vs
