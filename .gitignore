@@ -16,6 +16,7 @@ build/
 
 # Claude
 CLAUDE.md
+.claude/
 
 # MuJoCo
 MUJOCO_LOG.TXT
