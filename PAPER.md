@@ -22,8 +22,8 @@ completion* of persistent hidden structure from *temporal forecasting* of dynami
 make an honest claim: the gain is almost entirely completion — the pure-forecasting residual sits
 at the noise floor. Randomizing room geometry per episode leaves the gain statistically unchanged
 on rooms the model never saw, ruling out memorization of a fixed layout. The completed grid and
-its uncertainty drive an eyes-free spatial-audio navigation interface within a 7 ms
-perception-to-planning budget. We release the evaluation methodology — an empty-credit-immune
+its uncertainty drive an eyes-free spatial-audio navigation interface at 7 ms (p95)
+perception-to-planning latency, well inside a 20 Hz budget. We release the evaluation methodology — an empty-credit-immune
 micro-averaged gain, a completion/forecasting decomposition, and per-episode confidence
 intervals — as a reusable protocol for honest occupancy-completion claims.
 
@@ -75,7 +75,7 @@ Our contributions are:
   statistically unchanged on never-seen rooms (+0.306 fixed vs +0.309 [+0.294, +0.324]
   randomized), showing the completion is per-scene inference, not a memorized constant layout.
 - **A real-time eyes-free system** that turns completed occupancy and its uncertainty into an
-  A* path and nine-zone spatial-audio cues within a 7 ms p95 perception-to-planning budget.
+  A* path and nine-zone spatial-audio cues at 7 ms p95 perception-to-planning latency.
 
 ---
 
@@ -182,7 +182,8 @@ We use a MuJoCo single-room benchmark with three difficulty tiers — **static**
 training and 80 validation episodes on disjoint seeds. The BEV is 96×96 over 5 m; horizons are
 1/3/5/10 s. Unless noted, fixed-geometry results use a 6×6 m room; §4.4 randomizes geometry.
 Reproducibility is pinned: the fixed-geometry scene generation is verified bit-exact against a
-golden hash, and a full rollout re-run reproduces every published number exactly.
+golden hash, and a full rollout re-run reproduces every accuracy metric bit-identically
+(wall-clock latency, which is hardware-dependent, is the one exception).
 
 ### 4.2 Shadow-gain headline
 
@@ -196,8 +197,8 @@ Micro-averaged shadow gain at 5 s, per tier, with 95% bootstrap CIs:
 | debris | +0.315 | [+0.281, +0.350] |
 
 Every interval is clear of zero at every horizon, so the gain is statistically significant rather
-than sampling noise (Fig. `shadow_gain_ci.png`). In policy rollouts the pooled shadow gain is
-+0.325/+0.322/+0.320/+0.178 at 1/3/5/10 s. (Raw macro shadow-IoU levels — model 0.744 vs
+than sampling noise (Fig. `shadow_gain_ci.png`). In policy rollouts the frame-averaged (macro)
+shadow gain is +0.325/+0.322/+0.320/+0.178 at 1/3/5/10 s. (Raw macro shadow-IoU levels — model 0.744 vs
 persistence 0.424 at 5 s — are empty-credit inflated and are reported only for reference; the
 micro-gain is the defended number.)
 
@@ -215,7 +216,7 @@ persistent hidden structure:
 
 Excluding all persistent structure, the residual "nostatic" gain sits at the noise floor: fixed
 static +0.000, moving +0.007 (CI [+0.002, +0.012]), randomized-geometry static +0.002
-([+0.001, +0.003]) at 5 s. The honest claim is therefore **amodal completion of hidden
+([+0.001, +0.004]) at 5 s. The honest claim is therefore **amodal completion of hidden
 structure**, with a small but statistically significant dynamic-forecasting signal on the moving
 tier that decays with horizon as genuine forecasting should. We do not claim dynamic forecasting on
 debris, where the dynamic signal is at the noise floor and persistence matches the model beyond
@@ -239,9 +240,12 @@ nothing; completion is per-scene inference.
 
 ### 4.5 Calibration in shadow
 
-In-shadow ECE is 0.043–0.047 — *better* than in observed space (0.058–0.086) — with Brier
-0.022–0.036 (Fig. `reliability.png`). The model is underconfident in the mid-range but places
-little mass there. Calibration is not an artifact of the fixed room: on randomized geometry,
+At the 5 s horizon, in-shadow ECE is 0.043–0.047 across tiers — *better* than in observed space
+(0.058–0.086) — with Brier 0.022–0.036 (Fig. `reliability.png`); excluding the persistent
+structure entirely, in-shadow ECE remains 0.055–0.056 on the tiers with dynamic content (on the
+static tier the structure-excluded region has no positive labels, so no calibration curve exists
+there), so the calibration is not carried by the easy always-occupied cells. The model is underconfident in the mid-range but places little mass
+there. Calibration is not an artifact of the fixed room: on randomized geometry,
 in-shadow ECE is 0.050–0.067 vs observed 0.056–0.077, with shadow becoming the better-calibrated
 region at the longer 5–10 s horizons.
 
@@ -265,13 +269,18 @@ optical-flow estimation from the runtime critical path.
 forward, orchestrator; batch 1, deterministic U-Net) runs at 5.97 ms p50 / 7.00 ms p95 — well
 inside a 50 ms (20 Hz) budget. Monocular-depth acquisition and audio synthesis are excluded.
 
-**Falling-object anticipation.** We measure whether the model flags objects entering shadow before
-they arrive. Cell-level detection is 0.787 at a horizon-granular mean lead of 2.62 s. An
-object-level variant that scores each connected arrival component independently gives detection
-0.753 and, importantly, exposes what the cell-level false-alarm rate (0.021) hides: object-level
-precision is only 0.714 (29% of predicted arrivals are spurious). Lead time is bounded by the
-{1,3,5,10} s horizon grid — an interface limit — and the ≥3 s target is not met; we report this
-metric with its caveats rather than as a strength.
+**Anticipating occupancy revealed in shadow (a falling-object *proxy*).** We measure whether the
+model flags occupancy that materializes in unobserved space before it is revealed. Cell-level
+detection is 0.787 at a horizon-granular mean lead of 2.62 s. A component-level variant that
+scores each connected arrival region gives detection 0.753 and exposes what the cell-level
+false-alarm rate (0.021) hides: component-level precision is only 0.714. Three definitional
+caveats apply: events are counted per due prediction (one object aloft is scored at every issue
+step and horizon it is due, not once per object); "arrival" keys on unobserved-at-issue rather
+than newly-occupied cells, so occluded static geometry revealed by agent motion also counts and
+the metric pools all tiers; and precision is an unmatched majority-overlap over predicted
+components, sensitive to fragmentation. Lead time is bounded by the {1,3,5,10} s horizon grid —
+an interface limit — and the ≥3 s target is not met. We report this metric as a diagnostic, not
+a strength.
 
 **Navigation.** With the completed grid feeding the planner, the trained reactive policy achieves a
 per-episode collision rate of 0.367 (vs 0.60 untrained) and path straightness 0.773, but does not
@@ -312,9 +321,10 @@ dynamics.
 
 ## 6. Limitations
 
-Our evaluation is in simulation; we include a qualitative real-footage panel (depth → shadow → BEV
-→ completion) to show the pipeline runs on real input, but we make no quantitative real-world claim,
-as ground-truth occluded occupancy is unavailable without instrumentation. The model performs
+Our evaluation is in simulation; ground-truth occluded occupancy is unavailable on real footage
+without instrumentation, so no quantitative real-world claim is made. [If clip lands before
+freeze: add one sentence + panel — "a qualitative real-footage panel (depth → shadow → BEV →
+completion) shows the pipeline runs on real input"; otherwise ship this paragraph as-is.] The model performs
 amodal *completion*, not multi-step *forecasting*: the pure-dynamics residual is at the noise floor,
 and we frame the contribution accordingly. Navigation does not meet its collision target and the
 audio interface is not user-evaluated; both are presented as system context. Falling-object lead
