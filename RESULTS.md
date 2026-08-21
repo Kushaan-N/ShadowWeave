@@ -139,6 +139,27 @@ restored fixed-geometry env (`randomize_room=false`), so they are directly compa
 earlier +0.344 no-flow figure was measured on a transiently drifted env and has been
 superseded (see the reproducibility note below).
 
+## Observation-blind dataset-prior baseline
+
+To rule out "the model just learned the average room", `scripts/eval_prior_baseline.py`
+evaluates a pose-marginal prior — the mean training-set occupancy grid in the egocentric
+frame, using no observation — thresholded at its **most favorable** operating point (swept
+over 8 thresholds). Full fixed-val runs, 9,000 frames/tier (`$WS/val_decomp/prior_*.json`),
+@5 s:
+
+| tier | prior micro shadow IOU (best th=0.05) | structure recall | FP rate on empty hidden space | model (for contrast) |
+|---|:---:|:---:|:---:|:---:|
+| static | 0.102 | 0.879 | 0.723 | 0.610 @ FP 0.034 |
+| moving | 0.080 | 0.865 | 0.722 | 0.723 @ FP 0.015 |
+| debris | 0.089 | 0.869 | 0.717 | 0.670 @ FP 0.014 |
+
+The prior can only reach high structure recall by blanketing ~72% of genuinely empty
+hidden space with false positives; its best achievable micro shadow IOU is 0.08–0.10 vs
+the model's 0.61–0.72. Completion is observation-conditional inference — together with
+the randomized-geometry result this rules out both memorized layouts and memorized
+marginals. (Do not quote the prior's `dynamic_iou` in isolation: at threshold 0.05 it
+carpet-bombs the dynamic region too, which is meaningless at a 72% FP rate.)
+
 ## Diffusion world-model variant
 
 `world_model.architecture: diffusion` (conditional DDPM over future BEV occupancy) was
@@ -197,6 +218,12 @@ Forward-path latency (BEV projection + raycaster + world-model forward + orchest
 batch 1, deterministic U-Net): p50 5.97 ms, p95 7.00 ms — inside the 50 ms (20 Hz)
 budget. This excludes the monocular-depth network (eval consumes simulator depth) and
 HRTF audio synthesis, and does not cover the diffusion variant.
+
+Measured separately (`scripts/bench_depth.py`, SLURM job 63435577):
+Depth-Anything-V2-Small alone takes **49.9 ms p50 / 50.7 ms p95** on a GTX 1080 Ti
+(480×640 RGB, n=100, fp32) — essentially the whole 20 Hz budget on that hardware. The
+honest deployment story is asynchronous pipelining: depth runs at its own rate while
+the 7 ms completion path consumes the latest depth frame at 20 Hz.
 
 ## Reproducibility
 
