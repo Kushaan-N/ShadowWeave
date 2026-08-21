@@ -36,8 +36,9 @@ egocentric bird's-eye-view (BEV) occupancy grid, marks the unobserved cells with
 shadow mask, and predicts occupancy inside that mask together with a per-cell uncertainty. On a
 MuJoCo indoor benchmark, the model beats a persistence baseline by a micro-averaged shadow-IoU
 gain of \textbf{+0.31 to +0.36 at a 5\,s horizon} (95\% per-episode bootstrap CIs clear of zero at
-every horizon), and its uncertainty is \textbf{better calibrated inside shadow (ECE 0.043--0.047) than
-in directly observed space (0.058--0.086)}. We introduce a decomposition that separates \emph{amodal
+every horizon), far exceeds an observation-blind dataset prior even at the prior's best threshold
+(0.61--0.72 IoU vs 0.08--0.10), and its uncertainty is \textbf{better calibrated inside shadow
+(ECE 0.043--0.047) than in directly observed space (0.058--0.086)}. We introduce a decomposition that separates \emph{amodal
 completion} of persistent hidden structure from \emph{temporal forecasting} of dynamics, and use it to
 make an honest claim: the gain is almost entirely completion --- the pure-forecasting residual sits
 at the noise floor. Randomizing room geometry per episode leaves the gain statistically unchanged
