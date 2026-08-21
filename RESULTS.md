@@ -95,7 +95,7 @@ counted as persistent structure. We do not claim dynamic forecasting on debris.
 Excluding *all* persistent structure, both model and persistence shadow IOU collapse
 to ~0.01–0.02, and the residual "nostatic" gain is at the noise floor: fixed static
 +0.000, fixed moving +0.007 (CI [+0.002, +0.012]), randomized-geometry static +0.002
-(CI [+0.001, +0.003]) @5 s. So the honest claim is amodal completion of hidden
+(CI [+0.001, +0.004]) @5 s. So the honest claim is amodal completion of hidden
 *structure*, not multi-step dynamic forecasting.
 
 **On the wall-memorization confound (resolved):** this used to be flagged as a risk —
