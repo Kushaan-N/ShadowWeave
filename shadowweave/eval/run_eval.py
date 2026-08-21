@@ -40,6 +40,7 @@ from ..world_model import build_world_model
 from .baselines import (
     BaselineComparison,
     LeadTimeTracker,
+    ObjectLeadTimeTracker,
     calibration_error,
     shadow_diversity,
 )
@@ -102,6 +103,7 @@ def run_eval(
     metrics = EvalMetrics(horizons=horizons)
     baselines = BaselineComparison(horizons)
     lead_tracker = LeadTimeTracker()
+    obj_lead_tracker = ObjectLeadTimeTracker()
     ece_samples: list[float] = []
     diversity_samples: list[dict[str, float]] = []
     # Only a generative model can be scored on sample disagreement; a
@@ -194,6 +196,7 @@ def run_eval(
                             # Lead time on the SAME issue-pose truth/observation, not on
                             # the current-pose obs (which mismatched frames).
                             lead_tracker.log_due(horizons[hi], probs[hi], truth, p_obs)
+                            obj_lead_tracker.log_due(horizons[hi], probs[hi], truth, p_obs)
                     if step - issued >= int(max(horizons) * fps):
                         pending.remove(entry)
                 pending.append((
@@ -222,6 +225,7 @@ def run_eval(
     summary = metrics.summary()
     summary.update(baselines.summary())
     summary.update(lead_tracker.summary())
+    summary.update(obj_lead_tracker.summary())
     if ece_samples:
         summary["calibration_error"] = float(np.mean(ece_samples))
     if diversity_samples:
