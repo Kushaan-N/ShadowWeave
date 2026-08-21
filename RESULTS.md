@@ -142,9 +142,14 @@ superseded (see the reproducibility note below).
 ## Diffusion world-model variant
 
 `world_model.architecture: diffusion` (conditional DDPM over future BEV occupancy) was
-trained as an alternative to the deterministic U-Net; results are pending the final run
-and will be framed on sample diversity / calibration in shadow, not raw IOU (BCE and
-DDPM optimize different objectives, so IOU is not a fair head-to-head).
+trained as an alternative to the deterministic U-Net (epoch-8 snapshot at
+`$WS/checkpoints/world_model_diffusion/best_ep8_snapshot.pt`). Its evaluation is **ongoing,
+not reported**: iterated DDIM sampling (8 samples × 50 steps per prediction) exceeds the
+2 h batch-eval wall limit, so the 90-episode run timed out before producing diversity /
+calibration numbers. Framing would be on shadow sample-diversity ratio + calibration, not
+raw IOU (BCE and DDPM optimize different objectives). Left as future work; the paper stands
+on the deterministic U-Net, whose calibrated probabilities already carry the uncertainty
+story. To finish it: a short-episode eval (≈20 episodes) or a longer `--time` limit.
 
 ## Falling-object anticipation (metric caveats apply)
 
