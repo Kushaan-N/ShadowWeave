@@ -198,7 +198,16 @@ Micro-averaged shadow gain at 5 s, per tier, with 95% bootstrap CIs:
 
 Every interval is clear of zero at every horizon, so the gain is statistically significant rather
 than sampling noise (Fig. `shadow_gain_ci.png`). In policy rollouts the frame-averaged (macro)
-shadow gain is +0.325/+0.322/+0.320/+0.178 at 1/3/5/10 s. (Raw macro shadow-IoU levels — model 0.744 vs
+shadow gain is +0.325/+0.322/+0.320/+0.178 at 1/3/5/10 s.
+
+**Observation-blind prior.** Persistence could be a weak baseline for *completion*, so we also
+evaluate a pose-marginal dataset prior — the mean training-set occupancy in the egocentric frame,
+using no observation at all — swept over thresholds and reported at its most favorable one. It
+reaches only 0.08–0.10 micro shadow IoU across tiers: to recall hidden structure (0.87–0.88) it
+must blanket ~72% of genuinely empty hidden space with false positives, whereas the model achieves
+0.61–0.72 IoU at a 1.4–3.4% false-positive rate. Completion is therefore observation-conditional
+inference, not a memorized average room; together with the geometry-randomization result (§4.4)
+this rules out both memorized layouts and memorized marginals. (Raw macro shadow-IoU levels — model 0.744 vs
 persistence 0.424 at 5 s — are empty-credit inflated and are reported only for reference; the
 micro-gain is the defended number.)
 
@@ -267,7 +276,11 @@ optical-flow estimation from the runtime critical path.
 
 **Latency.** The perception-to-planning forward path (BEV projection, raycaster, world-model
 forward, orchestrator; batch 1, deterministic U-Net) runs at 5.97 ms p50 / 7.00 ms p95 — well
-inside a 50 ms (20 Hz) budget. Monocular-depth acquisition and audio synthesis are excluded.
+inside a 50 ms (20 Hz) budget. The monocular-depth stage is excluded and is not free: measured in
+isolation, Depth-Anything-V2-Small takes 49.9 ms p50 / 50.7 ms p95 on the evaluation-era GPU
+(GTX 1080 Ti, 480×640 input) — comparable to the entire budget on that hardware. A deployed
+system therefore runs depth asynchronously at its own rate while the 7 ms completion path
+consumes the most recent depth frame at 20 Hz. Audio synthesis remains excluded.
 
 **Anticipating occupancy revealed in shadow (a falling-object *proxy*).** We measure whether the
 model flags occupancy that materializes in unobserved space before it is revealed. Cell-level
