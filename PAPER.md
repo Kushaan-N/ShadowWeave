@@ -81,6 +81,11 @@ Our contributions are:
 
 ## 2. Method
 
+Fig. `architecture.png` summarizes the pipeline: a single depth frame is lifted to an
+egocentric BEV with an explicit shadow mask, a single-frame U-Net completes occupancy with
+per-cell probabilities, and the completed grid feeds the planning and audio layers
+(system context).
+
 ### 2.1 From a depth frame to an egocentric BEV with a shadow mask
 
 At each step the agent observes a single monocular-depth image (in simulation, the renderer's
