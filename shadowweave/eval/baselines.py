@@ -21,6 +21,12 @@ from collections import defaultdict
 import numpy as np
 import torch
 
+try:
+    from scipy import ndimage
+    _HAVE_NDIMAGE = True
+except Exception:  # scipy is a hard dep, but degrade to the cell-level metric if absent
+    _HAVE_NDIMAGE = False
+
 from .metrics import iou, masked_iou
 
 
@@ -237,6 +243,91 @@ class LeadTimeTracker:
         return out
 
 
+class ObjectLeadTimeTracker:
+    """Object-level falling metric: each *connected* arrival is one physical object.
+
+    ``LeadTimeTracker`` pools every arriving cell in a due frame into a single mean, so
+    two objects landing in the same frame count as one blurred event and a detection is
+    "did the model flag the majority of ALL arrived cells". That conflates distinct
+    objects and hides partial detections. Here the arrival mask is split into connected
+    components (``scipy.ndimage.label``) and each component is scored on its own:
+
+      * an object is DETECTED if the model puts probability above threshold on a
+        majority of that component's cells;
+      * a FALSE ALARM is a connected *predicted*-arrival component (pred says an object
+        arrives in shadow) that overlaps no real arrival — the object-level precision
+        counterpart, replacing the cell-fraction false-alarm of the cell tracker.
+
+    Granularity is (due prediction x horizon x object-component); a physical object aloft
+    is still counted at each horizon it is due, so ``lead_time`` is per component-event,
+    not per unique object across its whole descent. This removes the multi-object
+    conflation, which was the metric's worst confound; full per-physical-object dedup
+    would need the simulator's object identities threaded through the eval loop.
+    """
+
+    def __init__(self, threshold: float = 0.5, min_cells: int = 8,
+                 detect_frac: float = 0.5) -> None:
+        self.threshold = threshold
+        self.min_cells = min_cells
+        self.detect_frac = detect_frac
+        self.detected_leads: list[float] = []
+        self.missed = 0
+        self.false_alarms = 0
+        self.true_predicted = 0
+        self.available = _HAVE_NDIMAGE
+
+    def _components(self, mask: np.ndarray):
+        """Yield boolean masks of connected components with >= min_cells cells."""
+        lbl, n = ndimage.label(mask)
+        for k in range(1, n + 1):
+            comp = lbl == k
+            if int(comp.sum()) >= self.min_cells:
+                yield comp
+
+    def log_due(self, horizon_s: float, model_pred, truth, observed_at_issue) -> None:
+        """Same pose-consistent contract as ``LeadTimeTracker.log_due`` — all grids in
+        the issue pose — but scored per connected object rather than per pooled frame."""
+        if not self.available:
+            return
+        pred = LeadTimeTracker._grid2d(model_pred)
+        truth_b = LeadTimeTracker._grid2d(truth) > self.threshold
+        obs_b = LeadTimeTracker._grid2d(observed_at_issue) > self.threshold
+        pred_b = pred > self.threshold
+        arrived = truth_b & (~obs_b)          # real objects entering shadow
+        pred_arr = pred_b & (~obs_b)          # objects the model says will enter shadow
+
+        # Recall / lead time: one event per real arriving object.
+        for comp in self._components(arrived):
+            if float(pred_b[comp].mean()) > self.detect_frac:
+                self.detected_leads.append(float(horizon_s))
+            else:
+                self.missed += 1
+
+        # Precision / false alarm: one event per predicted arriving object.
+        for comp in self._components(pred_arr):
+            if float(arrived[comp].mean()) > self.detect_frac:
+                self.true_predicted += 1
+            else:
+                self.false_alarms += 1
+
+    def summary(self) -> dict[str, float]:
+        n_events = len(self.detected_leads) + self.missed
+        if not n_events and not self.false_alarms:
+            return {}
+        out: dict[str, float] = {
+            "falling_object_events": float(n_events),
+            "falling_object_detection_rate": len(self.detected_leads) / max(n_events, 1),
+        }
+        if self.detected_leads:
+            out["falling_object_lead_time_s"] = float(np.mean(self.detected_leads))
+            out["falling_object_lead_time_min_s"] = float(np.min(self.detected_leads))
+        n_pred = self.true_predicted + self.false_alarms
+        if n_pred:
+            out["falling_object_false_alarm_rate"] = self.false_alarms / n_pred
+            out["falling_object_precision"] = self.true_predicted / n_pred
+        return out
+
+
 def shadow_diversity(
     sample_std: torch.Tensor, shadow_mask: torch.Tensor
 ) -> dict[str, float]:
@@ -329,6 +420,27 @@ if __name__ == "__main__":
         tracker.observe(step, pred, {"bev_occupancy": occ}, horizons, fps=30)
     for k, v in tracker.summary().items():
         print(f"  {k}: {v:.3f}")
+
+    print("\nObjectLeadTimeTracker (two objects arrive together)")
+    obj = ObjectLeadTimeTracker(min_cells=4)
+    # Two separate arriving blobs; obs is empty (nothing seen at issue).
+    truth = np.zeros((32, 32), dtype=np.float32)
+    truth[4:8, 4:8] = 1.0        # object A
+    truth[20:24, 22:26] = 1.0    # object B
+    observed = np.zeros((32, 32), dtype=np.float32)
+    pred = np.zeros((32, 32), dtype=np.float32)
+    pred[4:8, 4:8] = 0.9         # flags A only
+    pred[27:30, 2:5] = 0.9       # spurious component -> false alarm
+    obj.log_due(3.0, pred, torch.from_numpy(truth), torch.from_numpy(observed))
+    s = obj.summary()
+    for k, v in s.items():
+        print(f"  {k}: {v:.3f}")
+    # A detected, B missed -> 1/2; one spurious predicted component -> 1 false alarm,
+    # one true predicted (A) -> precision 0.5.
+    assert s["falling_object_events"] == 2.0, s
+    assert abs(s["falling_object_detection_rate"] - 0.5) < 1e-9, s
+    assert abs(s["falling_object_false_alarm_rate"] - 0.5) < 1e-9, s
+    print("  object-level detection/false-alarm split ✓")
 
     print("\ncalibration_error")
     perfect = torch.rand(4096)
