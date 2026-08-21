@@ -211,9 +211,10 @@ shadow gain is +0.325/+0.322/+0.320/+0.178 at 1/3/5/10 s.
 **Observation-blind prior.** Persistence could be a weak baseline for *completion*, so we also
 evaluate a pose-marginal dataset prior — the mean training-set occupancy in the egocentric frame,
 using no observation at all — swept over thresholds and reported at its most favorable one. It
-reaches only 0.08–0.10 micro shadow IoU across tiers: to recall hidden structure (0.87–0.88) it
-must blanket ~72% of genuinely empty hidden space with false positives, whereas the model achieves
-0.61–0.72 IoU at a 1.4–3.4% false-positive rate. Completion is therefore observation-conditional
+reaches only 0.08–0.10 micro shadow IoU across tiers, and 0.09 on the randomized-geometry set:
+to recall hidden structure (0.87–0.92) it must blanket 72–79% of genuinely empty hidden space
+with false positives, whereas the model achieves 0.61–0.72 IoU at a 1.4–3.4% false-positive
+rate. Completion is therefore observation-conditional
 inference, not a memorized average room; together with the geometry-randomization result (§4.4)
 this rules out both memorized layouts and memorized marginals. (Raw macro shadow-IoU levels — model 0.744 vs
 persistence 0.424 at 5 s — are empty-credit inflated and are reported only for reference; the
