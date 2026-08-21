@@ -227,3 +227,63 @@ class TestLegacySceneContract:
                 f"{fn} no longer reproduces the legacy fixed-room scenes "
                 f"({got} != {want}) — published rollout numbers will not reproduce"
             )
+
+
+class TestObjectLeadTimeContract:
+    """Pin ObjectLeadTimeTracker semantics — the paper cites its numbers.
+
+    Documented (and deliberately caveated) behaviors under test: components are scored
+    independently per due call with no cross-time dedup, and "arrival" keys on
+    unobserved-at-issue (truth & ~observed) — so occluded static geometry counts too.
+    If a refactor changes either, the paper's caveat language goes stale with it.
+    """
+
+    def _tracker(self):
+        from shadowweave.eval.baselines import ObjectLeadTimeTracker
+
+        t = ObjectLeadTimeTracker()
+        if not t.available:
+            pytest.skip("scipy.ndimage not available")
+        return t
+
+    def test_components_scored_independently(self):
+        t = self._tracker()
+        truth = np.zeros((32, 32), np.float32)
+        truth[2:6, 2:6] = 1.0    # object A — will be detected
+        truth[20:24, 20:24] = 1.0  # object B — will be missed
+        pred = np.zeros((32, 32), np.float32)
+        pred[2:6, 2:6] = 0.9
+        pred[10:14, 10:14] = 0.9  # spurious blob — false alarm
+        obs = np.zeros((32, 32), np.float32)
+        t.log_due(3.0, pred, truth, obs)
+        s = t.summary()
+        assert s["falling_object_events"] == 2.0
+        assert s["falling_object_detection_rate"] == pytest.approx(0.5)
+        assert s["falling_object_precision"] == pytest.approx(0.5)
+        assert s["falling_object_lead_time_s"] == pytest.approx(3.0)
+
+    def test_no_cross_time_dedup(self):
+        """The same physical object due at two horizons counts as two events."""
+        t = self._tracker()
+        truth = np.zeros((32, 32), np.float32)
+        truth[2:6, 2:6] = 1.0
+        pred = truth.copy()
+        obs = np.zeros((32, 32), np.float32)
+        t.log_due(1.0, pred, truth, obs)
+        t.log_due(3.0, pred, truth, obs)
+        assert t.summary()["falling_object_events"] == 2.0
+
+    def test_revealed_static_geometry_counts_as_arrival(self):
+        """'Arrival' = truth & ~observed: occupancy that was merely occluded at issue
+        (not newly occupied) generates an event. The paper caveats exactly this."""
+        t = self._tracker()
+        truth = np.zeros((32, 32), np.float32)
+        truth[2:6, 2:6] = 1.0     # static wall segment, hidden at issue
+        pred = np.zeros((32, 32), np.float32)
+        obs = np.zeros((32, 32), np.float32)  # not observed => counts as arrival
+        t.log_due(5.0, pred, truth, obs)
+        assert t.summary()["falling_object_events"] == 1.0
+        # ...but observed-at-issue occupancy does NOT count.
+        t2 = self._tracker()
+        t2.log_due(5.0, pred, truth, truth)
+        assert t2.summary() == {}
