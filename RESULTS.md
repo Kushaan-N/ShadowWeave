@@ -1,4 +1,4 @@
-# ShadowWeave — results (full run, 2026-08-18; revised after adversarial review 2026-08-20; geometry-randomization + bootstrap CIs added 2026-08-21)
+# ShadowWeave — results (full run, 2026-08-18; revised after adversarial review 2026-08-20; geometry-randomization + bootstrap CIs added 2026-08-21; fixed-env restored + bit-exactly re-verified, object-level falling added 2026-08-21)
 
 World model: U-Net, 31M params, trained with early stopping (stopped at epoch 24,
 best epoch 8; best val loss 0.300, val IOU@5s 0.665). Input is a **single frame**:
@@ -126,20 +126,18 @@ auxiliary channel and retraining from scratch leaves the shadow gain intact:
 |---|---|---|
 | full (all 3 channels) | +0.306 / +0.363 / +0.315 | +0.320 |
 | no visibility (`$WS/val_decomp/novis/`) | +0.309 / +0.360 / +0.313 | — |
-| no flow (`$WS/results_noflow/`) | — | +0.344 |
+| no flow (`$WS/results_noflow/`) | — | +0.381 |
 
 The no-visibility per-tier gains are within CI of the full model (three ways), and the
-no-flow rollout gain is if anything slightly higher. Both auxiliary channels are
-therefore redundant: the completion signal is carried by the depth-derived occupancy
-channel alone. This simplifies the input and removes optical-flow (RAFT) from the
-runtime critical path.
+no-flow rollout gain is if anything slightly higher (+0.381 vs +0.320 @5 s). Both
+auxiliary channels are therefore redundant: the completion signal is carried by the
+depth-derived occupancy channel alone. This simplifies the input and removes optical-flow
+(RAFT) from the runtime critical path.
 
-⚠️ Comparability caveat on the no-flow rollout number: that eval ran 2026-08-20 13:47,
-after the geometry commit had (unintentionally) changed the fixed-env obstacle spawn
-bounds and before the 2026-08-21 restore — so its +0.344 was measured on different
-scenes than the full model's +0.320 and the two are not directly comparable. Re-run
-`results_noflow` under the restored env (a ~10 min GPU job) before citing the pair
-side by side, or compare on the fixed val set instead.
+Both the full (+0.320) and no-flow (+0.381) rollout numbers above were measured on the
+restored fixed-geometry env (`randomize_room=false`), so they are directly comparable. The
+earlier +0.344 no-flow figure was measured on a transiently drifted env and has been
+superseded (see the reproducibility note below).
 
 ## Diffusion world-model variant
 
@@ -150,19 +148,28 @@ DDPM optimize different objectives, so IOU is not a fair head-to-head).
 
 ## Falling-object anticipation (metric caveats apply)
 
-| metric | value |
-|---|---|
-| detection rate (per due prediction) | 0.787 |
-| false-alarm rate | 0.021 |
-| mean lead time (horizon-granular) | 2.62 s |
+| metric | cell-level | object-level (connected-component) |
+|---|---|---|
+| detection rate | 0.787 | 0.753 |
+| false-alarm rate | 0.021 | 0.286 |
+| precision | — | 0.714 |
+| mean lead time (horizon-granular) | 2.62 s | 2.63 s |
 
-Caveats a reader must know: an "event" is one due (prediction, horizon) instance,
-not one physical object (44,932 instances over 90 episodes); arrivals include
-static geometry entering shadow as the agent moves, not only falling debris; and
-lead time is the horizon bucket that fired ({1,3,5,10} s), so it is floored at 1 s
-and its mean reflects the horizon schedule as much as anticipation. The ≥3 s target
-is not met and, under this definition, the number is not comparable to
-object-level lead times in the literature.
+The **object-level** columns split each frame's arrival mask into connected components
+(one per physical object) and score each independently, instead of pooling every arriving
+cell into a single frame-mean (`ObjectLeadTimeTracker`, restored env, from
+`results_verify`). This exposes what the cell-level metric hides: the tiny cell-level
+false-alarm rate (0.021) is optimistic — of the distinct object-blobs the model predicts
+will arrive, **29 % are spurious** (precision 0.71). Detection and lead time are stable
+across the two views.
+
+Caveats a reader must know: even object-level, an event is per-due-prediction (an aloft
+object counts at each horizon it is due, not once per physical descent); arrivals include
+static geometry entering shadow as the agent moves, not only falling debris; and lead time
+is the horizon bucket that fired ({1,3,5,10} s), so it is floored at 1 s and bounded by the
+horizon grid — an interface limit, not a modeling failure. The ≥3 s target is not met and,
+under this definition, the number is not comparable to object-level lead times in the
+literature.
 
 ## Navigation (reactive local agent; A* owns goal-seeking)
 
@@ -185,6 +192,22 @@ Forward-path latency (BEV projection + raycaster + world-model forward + orchest
 batch 1, deterministic U-Net): p50 5.97 ms, p95 7.00 ms — inside the 50 ms (20 Hz)
 budget. This excludes the monocular-depth network (eval consumes simulator depth) and
 HRTF audio synthesis, and does not cover the diffusion variant.
+
+## Reproducibility
+
+All rollout numbers assume the legacy fixed-geometry env (`randomize_room=false`), which is
+the environment the policy, the world model, and 85 GB of stored rollouts were generated on
+(the fixed 6×6 m room, obstacle spawn bounds ±2.2 static / ±2.0 movers / ±2.2 blockers /
+±2.5 debris). A per-episode geometry-randomization feature transiently drifted this path;
+it was restored to reproduce the legacy scenes **bit-exactly** (0 mismatches over 1500
+builder invocations across 500 seeds) and pinned by a golden-hash regression test
+(`tests/test_contracts.py::test_fixed_room_scenes_are_bit_exact`). A full 90-episode
+rollout re-run under the restored env reproduces the published numbers exactly — collision
+0.3667, path efficiency 0.7728, shadow gain@5s 0.3195, falling detection 0.7875, falling
+false-alarm 0.0206 — confirming end-to-end reproduction, not just scene-level. Every full-
+model number uses the epoch-8 `best.pt` (val loss 0.300); `final.pt` is the overfit artifact
+and is never cited. The randomized-geometry results use the separate `randomize_room=true`
+path (its own dataset + checkpoint).
 
 ## Target scorecard (see report.md for the full table)
 
