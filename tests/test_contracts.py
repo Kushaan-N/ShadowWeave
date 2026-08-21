@@ -196,3 +196,34 @@ class TestAudioContract:
         seam = abs(float(b2[0, 0] - b1[-1, 0]))
         within = float(np.abs(np.diff(b1[:, 0])).max())
         assert seam <= within * 3, f"discontinuity at buffer seam ({seam:.5f} vs {within:.5f})"
+
+
+class TestLegacySceneContract:
+    """The fixed-room (randomize_room=false) scenes back every published number.
+
+    A geometry commit once changed the fixed path's spawn bounds as a side effect and
+    the Aug 18 rollout metrics silently stopped reproducing (collision 0.37 -> 0.76).
+    These golden hashes pin the exact XML the legacy builders emit for the first 50
+    seeds; if any refactor moves an RNG draw or a bound, this fails loudly instead.
+    """
+
+    GOLDEN = {
+        "_static_objects_xml": "ba7e647a6738f6d1",
+        "_moving_objects_xml": "ec27735e680832f2",
+        "_debris_objects_xml": "74249ab28c3e7f9d",
+    }
+
+    def test_fixed_room_scenes_are_bit_exact(self):
+        import hashlib
+
+        from shadowweave.sim import mujoco_env as menv
+
+        for fn, want in self.GOLDEN.items():
+            h = hashlib.sha256()
+            for s in range(50):
+                h.update(getattr(menv, fn)(np.random.default_rng(s), 3.0, 3.0).encode())
+            got = h.hexdigest()[:16]
+            assert got == want, (
+                f"{fn} no longer reproduces the legacy fixed-room scenes "
+                f"({got} != {want}) — published rollout numbers will not reproduce"
+            )
