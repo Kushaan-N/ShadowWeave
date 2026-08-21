@@ -7,10 +7,16 @@ Reads the per-tier json written by eval_val_decomp.py (one dir per model) and pr
      completion signal is flat.
   2. reliability.png     — reliability diagram at 5s, shadow vs observed — the
      persuasive figure for "uncertainty propagation into unobserved space".
+  3. shadow_gain_ci.png  — micro shadow gain (left) and nostatic gain (right) vs
+     horizon, with 95% bootstrap-CI bands per tier and, if --randgeom is given, the
+     randomized-geometry static run overlaid. This is the "every number has an error
+     bar" figure, and the left/right split shows the gain is completion (large, CI
+     clear of zero) not pure forecasting (nostatic ~0).
 
 Figures are white-background / colorblind-safe for direct inclusion in the paper.
 
-    python scripts/plot_decomp.py --dir <WS>/val_decomp/full --out figures/
+    python scripts/plot_decomp.py --dir <WS>/val_decomp/full --out figures/ \
+        --randgeom <WS>/val_decomp/randgeom.json
 """
 
 from __future__ import annotations
@@ -77,6 +83,49 @@ def plot_curves(data, out_path):
     print(f"wrote {out_path}")
 
 
+def _gain_series(d, key):
+    """(horizons, point, ci_lo, ci_hi) for a gain key with a matching `<key>_ci`."""
+    hs = d["horizons"]
+    pt, lo, hi = [], [], []
+    for h in hs:
+        cell = d["decomposition"][f"{h}s"]
+        pt.append(cell[key])
+        ci = cell.get(f"{key}_ci", [cell[key], cell[key]])
+        lo.append(ci[0])
+        hi.append(ci[1])
+    return hs, pt, lo, hi
+
+
+def plot_gain_ci(data, randgeom, out_path):
+    # Left: micro shadow gain (dominated by completion) — large, CI clear of zero.
+    # Right: nostatic gain (persistent structure removed) — the pure-forecasting
+    # residual, ~0. Showing both with error bands is the honest headline.
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(11, 4.3))
+    for key, ax, title in ((("micro_shadow_gain"), axL, "micro shadow gain\n(completion + forecasting)"),
+                           (("micro_shadow_gain_nostatic"), axR,
+                            "nostatic micro gain\n(persistent structure removed)")):
+        for t, d in data.items():
+            hs, pt, lo, hi = _gain_series(d, key)
+            c = COLORS.get(t, "#333")
+            ax.plot(hs, pt, marker="o", label=t, color=c)
+            ax.fill_between(hs, lo, hi, color=c, alpha=0.18, linewidth=0)
+        if randgeom is not None:
+            hs, pt, lo, hi = _gain_series(randgeom, key)
+            ax.plot(hs, pt, marker="s", linestyle="--", color="#000",
+                    label="static, rand-geom")
+            ax.fill_between(hs, lo, hi, color="#000", alpha=0.12, linewidth=0)
+        ax.axhline(0.0, color="#999", linewidth=0.8)
+        ax.set_title(title, fontsize=11)
+        ax.set_xlabel("horizon (s)")
+        ax.grid(alpha=0.25)
+    axL.set_ylabel("shadow IOU gain over persistence")
+    axL.legend(fontsize=9)
+    plt.tight_layout()
+    fig.savefig(out_path, dpi=200)
+    plt.close(fig)
+    print(f"wrote {out_path}")
+
+
 def plot_reliability(data, out_path):
     # Use the debris (or first available) tier's 5s reliability curve.
     tier = "debris" if "debris" in data else next(iter(data))
@@ -105,16 +154,26 @@ def plot_reliability(data, out_path):
 def main() -> None:
     ap = argparse.ArgumentParser(description="Plot decomposition + calibration figures")
     ap.add_argument("--dir", type=str, required=True, help="dir with {static,moving,debris}.json")
+    ap.add_argument("--randgeom", type=str, default=None,
+                    help="optional randgeom.json to overlay on the gain-CI figure")
     ap.add_argument("--out", type=str, default="figures")
     args = ap.parse_args()
 
     data = _load(pathlib.Path(args.dir))
     if not data:
         raise SystemExit(f"no tier jsons found in {args.dir}")
+    randgeom = None
+    if args.randgeom:
+        rp = pathlib.Path(args.randgeom)
+        if rp.exists():
+            randgeom = json.loads(rp.read_text())
+        else:
+            print(f"warning: {rp} not found, skipping randgeom overlay")
     out = pathlib.Path(args.out)
     out.mkdir(parents=True, exist_ok=True)
     plot_curves(data, out / "decomp_curves.png")
     plot_reliability(data, out / "reliability.png")
+    plot_gain_ci(data, randgeom, out / "shadow_gain_ci.png")
 
 
 if __name__ == "__main__":
