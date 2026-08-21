@@ -99,21 +99,31 @@ def _area_scale(half_x: float, half_y: float) -> float:
     return (4.0 * half_x * half_y) / 36.0
 
 
+# Legacy fixed-room spawn margins, per obstacle type — the bounds the published Aug 18
+# numbers were generated with (±2.2 static / ±2.0 movers / ±2.2 blockers / ±2.5 debris
+# in the 6x6 room). The fixed-room path passes margin=None and each builder falls back
+# to these, so randomize_room=false reproduces the legacy scenes EXACTLY; a uniform
+# margin here silently changed the scenes and broke reproduction of the Aug 18 rollout
+# metrics (collision 0.37 -> 0.76).
+_LEGACY_MARGINS = {"static": 0.8, "mover": 1.0, "blocker": 0.8, "debris": 0.5}
+
+
 def _xy(rng, half_x, half_y, margin):
     """A random position at least `margin` inside each wall (per-axis). One size-2 draw, to
-    match the legacy rng.uniform(-b, b, size=2) consumption so the fixed-room path stays close."""
+    match the legacy rng.uniform(-b, b, size=2) consumption so the fixed-room path stays
+    stream-identical."""
     hx, hy = max(half_x - margin, 0.1), max(half_y - margin, 0.1)
     xy = rng.uniform([-hx, -hy], [hx, hy])
     return float(xy[0]), float(xy[1])
 
 
-def _static_objects_xml(rng, half_x, half_y, margin) -> str:
+def _static_objects_xml(rng, half_x, half_y, margin=None) -> str:
     xml = ""
     sc = _area_scale(half_x, half_y)
     lo = max(2, round(3 * sc)); hi = max(lo + 1, round(6 * sc))
     n = rng.integers(lo, hi)
     for i in range(int(n)):
-        x, y = _xy(rng, half_x, half_y, margin)
+        x, y = _xy(rng, half_x, half_y, _LEGACY_MARGINS["static"] if margin is None else margin)
         s = rng.uniform(0.2, 0.45)
         hz = rng.uniform(0.3, 1.1)
         xml += (
@@ -123,11 +133,11 @@ def _static_objects_xml(rng, half_x, half_y, margin) -> str:
     return xml
 
 
-def _moving_objects_xml(rng, half_x, half_y, margin) -> str:
+def _moving_objects_xml(rng, half_x, half_y, margin=None) -> str:
     xml = ""
     sc = _area_scale(half_x, half_y)
     for i in range(max(1, round(_N_MOVERS * sc))):
-        x, y = _xy(rng, half_x, half_y, margin)
+        x, y = _xy(rng, half_x, half_y, _LEGACY_MARGINS["mover"] if margin is None else margin)
         xml += f"""
     <body name="mover_{i}" pos="{x:.2f} {y:.2f} 0.5">
       <freejoint name="mover_joint_{i}"/>
@@ -135,7 +145,7 @@ def _moving_objects_xml(rng, half_x, half_y, margin) -> str:
     </body>"""
     # A couple of static blockers so "moving" is not trivially empty.
     for i in range(max(1, round(2 * sc))):
-        x, y = _xy(rng, half_x, half_y, margin)
+        x, y = _xy(rng, half_x, half_y, _LEGACY_MARGINS["blocker"] if margin is None else margin)
         xml += (
             f'\n    <geom name="obs_{i}" type="box" pos="{x:.2f} {y:.2f} 0.5" '
             f'size="0.3 0.3 0.5" rgba="0.8 0.4 0.1 1"/>'
@@ -143,11 +153,11 @@ def _moving_objects_xml(rng, half_x, half_y, margin) -> str:
     return xml
 
 
-def _debris_objects_xml(rng, half_x, half_y, margin) -> str:
+def _debris_objects_xml(rng, half_x, half_y, margin=None) -> str:
     xml = ""
     sc = _area_scale(half_x, half_y)
     for i in range(max(1, round(_N_DEBRIS * sc))):
-        x, y = _xy(rng, half_x, half_y, margin)
+        x, y = _xy(rng, half_x, half_y, _LEGACY_MARGINS["debris"] if margin is None else margin)
         s = rng.uniform(0.12, 0.25)
         xml += f"""
     <body name="debris_{i}" pos="{x:.2f} {y:.2f} {_DEBRIS_HOLD_Z:.2f}">
@@ -155,7 +165,7 @@ def _debris_objects_xml(rng, half_x, half_y, margin) -> str:
       <geom type="box" size="{s:.2f} {s:.2f} {s:.2f}" rgba="0.9 0.2 0.2 1" mass="1"/>
     </body>"""
     for i in range(max(1, round(2 * sc))):
-        x, y = _xy(rng, half_x, half_y, margin)
+        x, y = _xy(rng, half_x, half_y, _LEGACY_MARGINS["blocker"] if margin is None else margin)
         xml += (
             f'\n    <geom name="obs_{i}" type="box" pos="{x:.2f} {y:.2f} 0.4" '
             f'size="0.3 0.3 0.4" rgba="0.8 0.4 0.1 1"/>'
@@ -221,7 +231,10 @@ class ShadowWeaveEnv:
             self._half_y = float(self._rng.uniform(lo, hi)) if self.cfg.sim.get("room_aspect", True) else self._half_x
         else:
             self._half_x = self._half_y = float(self.cfg.sim.room_size) / 2.0
-        margin = float(self.cfg.sim.get("obstacle_wall_margin", 0.6))
+        # None => each builder uses its per-type _LEGACY_MARGINS value, reproducing the
+        # legacy fixed-room scenes (and the published Aug 18 numbers) exactly.
+        margin = (float(self.cfg.sim.get("obstacle_wall_margin", 0.6))
+                  if self.cfg.sim.get("randomize_room", False) else None)
 
         difficulty = self.cfg.sim.difficulty
         builders = {
@@ -401,7 +414,11 @@ class ShadowWeaveEnv:
             pos = np.array([self._rng.uniform(-hx, hx), self._rng.uniform(-hy, hy)], dtype=np.float32)
             if self._clearance(pos) > self.cfg.sim.agent_radius + 0.15:
                 return pos, float(self._rng.uniform(0, 2 * math.pi))
-        return np.array([0.0, 0.0], dtype=np.float32), 0.0
+        # Legacy fixed-room fallback was (0, -2); keep it so the fixed path reproduces the
+        # published runs exactly. (0, 0) is only safe/centred for randomized rooms.
+        if self.cfg.sim.get("randomize_room", False):
+            return np.array([0.0, 0.0], dtype=np.float32), 0.0
+        return np.array([0.0, -2.0], dtype=np.float32), 0.0
 
     # ------------------------------------------------------------------
     # Agent motion
