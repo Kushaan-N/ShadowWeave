@@ -134,6 +134,13 @@ therefore redundant: the completion signal is carried by the depth-derived occup
 channel alone. This simplifies the input and removes optical-flow (RAFT) from the
 runtime critical path.
 
+⚠️ Comparability caveat on the no-flow rollout number: that eval ran 2026-08-20 13:47,
+after the geometry commit had (unintentionally) changed the fixed-env obstacle spawn
+bounds and before the 2026-08-21 restore — so its +0.344 was measured on different
+scenes than the full model's +0.320 and the two are not directly comparable. Re-run
+`results_noflow` under the restored env (a ~10 min GPU job) before citing the pair
+side by side, or compare on the fixed val set instead.
+
 ## Diffusion world-model variant
 
 `world_model.architecture: diffusion` (conditional DDPM over future BEV occupancy) was
