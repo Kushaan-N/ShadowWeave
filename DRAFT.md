@@ -122,8 +122,8 @@ completion from forecasting keeps the claim honest.
 - HAVE: `reliability.png` (calibration in shadow) → Fig for 4.4.
 - HAVE: `decomp_curves.png` → Fig for 4.2.
 - HAVE: `prediction_0x.png` panels → qualitative completion figure.
+- HAVE: `architecture.{png,svg}` (system/architecture diagram, `scripts/plot_architecture.py`).
 - NEED: real-footage depth→shadow→BEV→completion panel (blocked on a clip).
-- NEED: system/architecture diagram (1 figure).
 
 ## Open TODO before submission
 - Tighten to CFP page limit (need CFP).
