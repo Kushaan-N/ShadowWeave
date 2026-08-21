@@ -176,7 +176,7 @@ story. To finish it: a short-episode eval (≈20 episodes) or a longer `--time` 
 
 | metric | cell-level | object-level (connected-component) |
 |---|---|---|
-| detection rate | 0.787 | 0.753 |
+| detection rate | 0.787 | 0.752 |
 | false-alarm rate | 0.021 | 0.286 |
 | precision | — | 0.714 |
 | mean lead time (horizon-granular) | 2.62 s | 2.63 s |
