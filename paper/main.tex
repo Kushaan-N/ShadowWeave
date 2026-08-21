@@ -273,9 +273,10 @@ micro-gain is the defended number.)
 \paragraph{Observation-blind prior.} Persistence could be a weak baseline for \emph{completion},
 so we also evaluate a pose-marginal dataset prior --- the mean training-set occupancy in the
 egocentric frame, using no observation at all --- swept over thresholds and reported at its most
-favorable one. It reaches only 0.08--0.10 micro shadow IoU across tiers: to recall hidden
-structure (0.87--0.88) it must blanket ${\sim}72\%$ of genuinely empty hidden space with false
-positives, whereas the model achieves 0.61--0.72 IoU at a 1.4--3.4\% false-positive rate.
+favorable one. It reaches only 0.08--0.10 micro shadow IoU across tiers, and 0.09 on the
+randomized-geometry set: to recall hidden structure (0.87--0.92) it must blanket 72--79\% of
+genuinely empty hidden space with false positives, whereas the model achieves 0.61--0.72 IoU
+at a 1.4--3.4\% false-positive rate.
 Completion is therefore observation-conditional inference, not a memorized average room;
 together with the geometry-randomization result (\S\ref{sec:robustness}) this rules out both
 memorized layouts and memorized marginals.
