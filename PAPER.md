@@ -277,12 +277,17 @@ metric with its caveats rather than as a strength.
 per-episode collision rate of 0.367 (vs 0.60 untrained) and path straightness 0.773, but does not
 meet the ≤0.10 collision target. We present navigation as an honest system demonstration.
 
-### 4.8 Generative variant (optional)
+### 4.8 Generative variant (ongoing work)
 
 We additionally trained a conditional-diffusion (DDPM) world model as an alternative to the
-deterministic U-Net, framed on sample diversity in shadow and calibration rather than IoU (BCE and
-DDPM optimize different objectives). [Numbers pending final eval; include as a bonus row only if
-sample diversity concentrates in shadow and calibration is sane, otherwise noted as ongoing work.]
+deterministic U-Net, motivated by the fact that BCE is mean-seeking and hedges into a grey smear
+exactly where the future is multimodal — the shadow — whereas a generative model can sample
+coherent alternatives and expose its disagreement as uncertainty concentrated in the occluded
+region. A full calibrated evaluation (in-shadow sample-diversity ratio and calibration, the fair
+comparison given that BCE and DDPM optimize different objectives) is ongoing: iterated DDIM
+sampling exceeds our batch-eval budget, and we leave a like-for-like generative comparison to
+future work. The deterministic model's calibrated per-cell probabilities already carry the
+uncertainty narrative of this paper.
 
 ---
 
