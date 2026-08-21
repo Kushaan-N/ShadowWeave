@@ -102,12 +102,29 @@ def render(summary: dict, cfg) -> str:
             rows.append(["margin (det - fa)", f"{margin:+.3f}", bar(max(margin, 0.0))])
         if "falling_lead_time_s" in summary:
             rows.append(["mean lead time", f"{summary['falling_lead_time_s']:.2f}s", ""])
+        # Object-level (connected-component) view: each arriving object scored on its
+        # own instead of pooling every arrived cell in the frame into one mean.
+        if "falling_object_detection_rate" in summary:
+            rows.append(["— object-level —", "", ""])
+            rows.append(["obj detection rate", f"{summary['falling_object_detection_rate']:.3f}",
+                         bar(summary["falling_object_detection_rate"])])
+            if "falling_object_false_alarm_rate" in summary:
+                rows.append(["obj false-alarm rate", f"{summary['falling_object_false_alarm_rate']:.3f}",
+                             bar(summary["falling_object_false_alarm_rate"])])
+            if "falling_object_precision" in summary:
+                rows.append(["obj precision", f"{summary['falling_object_precision']:.3f}",
+                             bar(summary["falling_object_precision"])])
+            if "falling_object_lead_time_s" in summary:
+                rows.append(["obj mean lead time", f"{summary['falling_object_lead_time_s']:.2f}s", ""])
         out += ["", rule("Falling-object anticipation"), "",
                 table(rows, ["metric", "value", ""], aligns=["l", "r", "l"]),
                 f"\n  {C.dim}a high detection rate with a high false-alarm rate means the "
-                f"model flags\n  everything, not that it anticipates anything. Events are "
-                f"per-due-prediction, not\n  per-object, and lead time is the horizon bucket "
-                f"({{1,3,5,10}}s) that fired, so it\n  is floored at 1s.{C.reset}"]
+                f"model flags\n  everything, not that it anticipates anything. The cell-level "
+                f"rows pool every\n  arrived cell in a frame into one mean; the object-level "
+                f"rows split the arrival\n  mask into connected components and score each object "
+                f"on its own. Both are\n  per-due-prediction (an aloft object counts at each "
+                f"horizon), and lead time is\n  the horizon bucket ({{1,3,5,10}}s) that fired, "
+                f"so it is floored at 1s.{C.reset}"]
 
     # ── navigation ─────────────────────────────────────────────────────
     nav = [(k, summary[k]) for k in
