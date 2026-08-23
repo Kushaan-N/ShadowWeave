@@ -214,9 +214,14 @@ using no observation at all — swept over thresholds and reported at its most f
 reaches only 0.08–0.10 micro shadow IoU across tiers, and 0.09 on the randomized-geometry set:
 to recall hidden structure (0.87–0.92) it must blanket 72–79% of genuinely empty hidden space
 with false positives, whereas the model achieves 0.61–0.72 IoU at a 1.4–3.4% false-positive
-rate. Completion is therefore observation-conditional
-inference, not a memorized average room; together with the geometry-randomization result (§4.4)
-this rules out both memorized layouts and memorized marginals. (Raw macro shadow-IoU levels — model 0.744 vs
+rate. A complementary observation-conditioned heuristic — dilating every observed obstacle into
+the shadow, swept over radii and scored at its best — peaks at its smallest radius with micro
+shadow IoU 0.31–0.35, at or marginally below persistence itself; growing the radius only trades
+false positives for recall, monotonically lowering IoU. Hidden structure is non-local: neither
+copying the observation, extrapolating it locally, nor an observation-blind prior recovers it.
+Completion is therefore learned observation-conditional inference; together with the
+geometry-randomization result (§4.4) this rules out memorized layouts, memorized marginals, and
+trivial extrapolation alike (full tables in Appendix B). (Raw macro shadow-IoU levels — model 0.744 vs
 persistence 0.424 at 5 s — are empty-credit inflated and are reported only for reference; the
 micro-gain is the defended number.)
 
