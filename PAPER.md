@@ -344,9 +344,9 @@ dynamics.
 ## 6. Limitations
 
 Our evaluation is in simulation; ground-truth occluded occupancy is unavailable on real footage
-without instrumentation, so no quantitative real-world claim is made. [If clip lands before
-freeze: add one sentence + panel — "a qualitative real-footage panel (depth → shadow → BEV →
-completion) shows the pipeline runs on real input"; otherwise ship this paragraph as-is.] The model performs
+without instrumentation, so no quantitative real-world claim is made. The perception front-end
+nonetheless accepts real monocular depth (Depth-Anything-V2), so sim-to-real transfer of the
+completion model is the natural next step. The model performs
 amodal *completion*, not multi-step *forecasting*: the pure-dynamics residual is at the noise floor,
 and we frame the contribution accordingly. Navigation does not meet its collision target and the
 audio interface is not user-evaluated; both are presented as system context. Falling-object lead
