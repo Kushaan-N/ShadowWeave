@@ -17,6 +17,10 @@
 
 \title{ShadowWeave: Calibrated Amodal Occupancy Completion into Occluded Space from a Single Depth Frame}
 
+% RoboWM (NeurIPS 2026) review is double-blind on OpenReview (camera-ready is
+% de-anonymized per the CFP). For the SUBMISSION, comment the named block and
+% uncomment the anonymous one.
+% \author{Anonymous\\ NeurIPS 2026 RoboWM Workshop Submission}
 \author{Kushaan Naskar\\
 University of Massachusetts Amherst\\
 \texttt{kushaannaskar@gmail.com}}
@@ -254,9 +258,10 @@ redundant (no optical flow on the critical path).
 
 \textbf{System.} The perception-to-planning path runs at 5.97\,ms p50 / 7.00\,ms p95 (batch 1,
 deterministic U-Net), inside a 50\,ms (20\,Hz) budget; the excluded monocular-depth stage is
-not free (Depth-Anything-V2-Small: 49.9\,ms p50 / 50.7\,ms p95 in isolation, evaluation-era
-GTX~1080~Ti, $480{\times}640$), so deployment runs depth asynchronously while the 7\,ms
-completion path consumes the latest depth frame at 20\,Hz (audio synthesis excluded). A falling-object \emph{proxy} (cell-level detection 0.787 at 2.62\,s mean lead;
+not free (Depth-Anything-V2-Small: 49.9\,ms p50 / 50.7\,ms p95 in isolation, 54.4\,ms measured
+end-to-end sequential, evaluation-era GTX~1080~Ti, $480{\times}640$), so deployment runs depth
+asynchronously while the 7\,ms completion path consumes the latest depth frame at 20\,Hz
+(audio synthesis excluded). A falling-object \emph{proxy} (cell-level detection 0.787 at 2.62\,s mean lead;
 component-level 0.752, precision only 0.714) counts events per due prediction, not per object,
 keys on cells revealed rather than newly occupied (occluded static geometry revealed by agent
 motion also counts), and its lead is bounded by the \{1,3,5,10\}\,s horizon grid, missing the
@@ -292,7 +297,9 @@ transfers to never-seen rooms, and fits a real-time perception-to-planning budge
 empty-credit-immune micro-gain, per-episode CIs, and completion/forecasting decomposition keep
 the claim honest and, we hope, get reused. The limitations are those it surfaces:
 evaluation is in simulation (ground-truth occluded occupancy is unavailable on real footage
-without instrumentation), so we make no quantitative real-world claim; the model performs amodal
+without instrumentation), so we make no quantitative real-world claim, though the front-end
+already accepts real monocular depth (Depth-Anything-V2), making sim-to-real transfer the
+natural next step; the model performs amodal
 \emph{completion}, not multi-step \emph{forecasting}, and is framed accordingly; navigation
 misses its collision target and the audio interface is not user-evaluated (system context); and
 falling-object lead is bounded by the horizon grid.
