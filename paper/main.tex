@@ -266,7 +266,8 @@ Table~\ref{tab:gain}.
 \end{figure}
 
 Every interval is clear of zero at every horizon, so the gain is statistically significant rather
-than sampling noise (Fig.~\ref{fig:shadowgain}). In policy rollouts the frame-averaged (macro)
+than sampling noise (Fig.~\ref{fig:shadowgain}; all horizons tabulated in
+Appendix~\ref{app:gains}). In policy rollouts the frame-averaged (macro)
 shadow gain is +0.325\slash+0.322\slash+0.320\slash+0.178 at 1/3/5/10\,s. (Raw macro shadow-IoU levels --- model 0.744 vs
 persistence 0.424 at 5\,s --- are empty-credit inflated and are reported only for reference; the
 micro-gain is the defended number.)
@@ -280,7 +281,7 @@ genuinely empty hidden space with false positives, whereas the model achieves 0.
 at a 1.4--3.4\% false-positive rate.
 Completion is therefore observation-conditional inference, not a memorized average room;
 together with the geometry-randomization result (\S\ref{sec:robustness}) this rules out both
-memorized layouts and memorized marginals.
+memorized layouts and memorized marginals (full table in Appendix~\ref{app:prior}).
 
 \subsection{What the gain is: completion, not clairvoyance}
 \label{sec:completion}
@@ -366,7 +367,7 @@ region at the longer 5--10\,s horizons.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.9\linewidth]{reliability.png}
+  \includegraphics[width=0.55\linewidth]{reliability.png}
   \caption{Reliability diagrams restricted to shadow cells (equal-mass binning: a fine 1000-bin
   histogram merged into 15 equal-count macro-bins). At 5\,s, in-shadow ECE is 0.043--0.047 across
   tiers --- better than in directly observed space (0.058--0.086) --- with Brier 0.022--0.036;
@@ -424,7 +425,9 @@ caveats apply: events are counted per due prediction (one object aloft is scored
 step and horizon it is due, not once per object); ``arrival'' keys on unobserved-at-issue rather
 than newly-occupied cells, so occluded static geometry revealed by agent motion also counts and
 the metric pools all tiers; and precision is an unmatched majority-overlap over predicted
-components, sensitive to fragmentation. Lead time is bounded by the \{1,3,5,10\}\,s horizon grid ---
+components, sensitive to fragmentation (both scorings tabulated in
+Appendix~\ref{app:falling}; qualitative panels in Appendix~\ref{app:qual}). Lead time is
+bounded by the \{1,3,5,10\}\,s horizon grid ---
 an interface limit --- and the $\ge$3\,s target is not met. We report this metric as a diagnostic, not
 a strength.
 
@@ -432,18 +435,8 @@ a strength.
 per-episode collision rate of 0.367 (vs 0.60 untrained) and path straightness 0.773, but does not
 meet the $\le$0.10 collision target. We present navigation as an honest system demonstration.
 
-\subsection{Generative variant (ongoing work)}
-\label{sec:generative}
-
-We additionally trained a conditional-diffusion (DDPM) world model as an alternative to the
-deterministic U-Net, motivated by the fact that BCE is mean-seeking and hedges into a grey smear
-exactly where the future is multimodal --- the shadow --- whereas a generative model can sample
-coherent alternatives and expose its disagreement as uncertainty concentrated in the occluded
-region. A full calibrated evaluation (in-shadow sample-diversity ratio and calibration, the fair
-comparison given that BCE and DDPM optimize different objectives) is ongoing: iterated DDIM
-sampling exceeds our batch-eval budget, and we leave a like-for-like generative comparison to
-future work. The deterministic model's calibrated per-cell probabilities already carry the
-uncertainty narrative of this paper.
+A generative (conditional-diffusion) variant of the world model is deferred to
+Appendix~\ref{app:generative}.
 
 \section{Related work}
 \label{sec:related}
@@ -489,5 +482,130 @@ under it.
 
 \bibliographystyle{plainnat}
 \bibliography{references}
+
+\appendix
+
+\section{Per-horizon shadow gains with confidence intervals}
+\label{app:gains}
+
+Table~\ref{tab:gains-full} reports the micro-averaged shadow-IoU gain over persistence at every
+horizon, with 95\% per-episode bootstrap confidence intervals (10{,}000 resamples, paired
+model$-$persistence). Every interval is clear of zero. The static-tier gain is flat across
+horizons (persistent structure does not move); the debris-tier gain decays with horizon as more
+debris settles into persistent structure; the randomized-geometry run tracks the fixed-geometry
+static tier throughout.
+
+\begin{table}[h]
+  \centering
+  \scriptsize
+  \setlength{\tabcolsep}{3.5pt}
+  \caption{Micro shadow gain over persistence, all horizons, 95\% bootstrap CIs over episodes.}
+  \label{tab:gains-full}
+  \begin{tabular}{lcccc}
+    \toprule
+    tier & 1\,s & 3\,s & 5\,s & 10\,s \\
+    \midrule
+    static & +0.307 [+0.288, +0.327] & +0.307 [+0.288, +0.327] & +0.306 [+0.288, +0.327] & +0.306 [+0.287, +0.327] \\
+    moving & +0.361 [+0.348, +0.375] & +0.364 [+0.351, +0.379] & +0.363 [+0.349, +0.378] & +0.361 [+0.347, +0.375] \\
+    debris & +0.343 [+0.315, +0.370] & +0.329 [+0.297, +0.361] & +0.315 [+0.281, +0.350] & +0.290 [+0.256, +0.327] \\
+    rand.\ geometry & +0.313 [+0.299, +0.328] & +0.312 [+0.298, +0.327] & +0.309 [+0.294, +0.324] & +0.303 [+0.287, +0.318] \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Observation-blind prior baseline}
+\label{app:prior}
+
+The pose-marginal prior is the mean training-set occupancy grid in the egocentric frame,
+thresholded at whichever of eight thresholds (0.02--0.5) maximizes its micro shadow IoU --- the
+most favorable possible reading. Table~\ref{tab:prior} shows that even so, the prior can reach
+high structure recall only by blanketing ${\sim}72$--79\% of genuinely empty hidden space with
+false positives, capping its IoU at 0.08--0.10 versus the model's 0.61--0.72. One caution:
+the prior's IoU restricted to \emph{dynamic} cells should never be quoted in isolation ---
+at its best threshold the prior carpet-bombs the dynamic region too, which is meaningless at a
+72\% false-positive rate.
+
+\begin{table}[h]
+  \centering
+  \small
+  \caption{Observation-blind prior at its best threshold (0.05) vs the model, @5\,s.}
+  \label{tab:prior}
+  \begin{tabular}{lcccc}
+    \toprule
+    tier & prior micro IoU & prior structure recall & prior FP on empty & model (IoU @ FP) \\
+    \midrule
+    static & 0.102 & 0.879 & 0.723 & 0.610 @ 0.034 \\
+    moving & 0.080 & 0.865 & 0.722 & 0.723 @ 0.015 \\
+    debris & 0.089 & 0.869 & 0.717 & 0.670 @ 0.014 \\
+    rand.\ geometry & 0.087 & 0.921 & 0.793 & 0.655 @ 0.021 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+\section{Falling-object proxy: cell-level vs component-level}
+\label{app:falling}
+
+\begin{table}[h]
+  \centering
+  \small
+  \caption{Cell-level vs connected-component scoring of the revealed-occupancy proxy.}
+  \label{tab:falling}
+  \begin{tabular}{lcc}
+    \toprule
+    metric & cell-level & component-level \\
+    \midrule
+    detection rate & 0.787 & 0.752 \\
+    false-alarm rate & 0.021 & 0.286 \\
+    precision & --- & 0.714 \\
+    mean lead time (horizon-granular) & 2.62\,s & 2.63\,s \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The component-level variant splits each frame's arrival mask into connected components and
+scores each independently, which exposes what the cell-level false-alarm rate hides: of the
+distinct arrival components the model predicts, 29\% are spurious. All the definitional caveats
+of \S\ref{sec:system} apply to both columns: events are per due prediction rather than per
+physical object, ``arrival'' keys on unobserved-at-issue rather than newly-occupied cells (so
+occluded static geometry revealed by agent motion counts, across all tiers), and precision is an
+unmatched majority-overlap over predicted components, sensitive to fragmentation.
+
+\section{Generative variant (ongoing work)}
+\label{app:generative}
+
+We additionally trained a conditional-diffusion (DDPM) world model as an alternative to the
+deterministic U-Net, motivated by the fact that BCE is mean-seeking and hedges into a grey smear
+exactly where the future is multimodal --- the shadow --- whereas a generative model can sample
+coherent alternatives and expose its disagreement as uncertainty concentrated in the occluded
+region. A full calibrated evaluation (in-shadow sample-diversity ratio and calibration, the fair
+comparison given that BCE and DDPM optimize different objectives) is ongoing: iterated DDIM
+sampling exceeds our batch-eval budget, and we leave a like-for-like generative comparison to
+future work. The deterministic model's calibrated per-cell probabilities already carry the
+uncertainty narrative of this paper.
+
+\section{Reproducibility}
+\label{app:repro}
+
+Scene generation for the fixed-geometry environment is pinned by a golden-hash regression test
+(byte-identical XML for the first 50 seeds), and a full 90-episode rollout re-run reproduces
+every published accuracy metric bit-identically (wall-clock latency, which is
+hardware-dependent, is the one exception). All full-model numbers use a single early-stopped
+checkpoint selected on validation IoU; train, validation, and evaluation episodes use disjoint
+seed ranges. Code, configuration, seeds, the evaluation summaries behind every table, and a
+frozen dependency lock accompany the paper; datasets are regenerable from seeds with a single
+pipeline script.
+
+\section{Qualitative examples}
+\label{app:qual}
+
+\begin{figure}[h]
+  \centering
+  \includegraphics[width=0.95\linewidth]{prediction_00.png}
+  \caption{Qualitative completion panel (debris tier). Row 1: observed occupancy at issue time
+  and the visibility grid (dark = shadow). Row 2: ground-truth occupancy at $t{+}1/3/5/10$\,s,
+  rendered in the issue pose. Row 3: model predictions --- the forecasts fill the shadow cones
+  with the completed structure. Row 4: error maps (red = false positive, blue = missed).}
+  \label{fig:qual}
+\end{figure}
 
 \end{document}
