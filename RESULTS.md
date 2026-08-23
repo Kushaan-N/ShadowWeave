@@ -161,6 +161,23 @@ the randomized-geometry result this rules out both memorized layouts and memoriz
 marginals. (Do not quote the prior's `dynamic_iou` in isolation: at threshold 0.05 it
 carpet-bombs the dynamic region too, which is meaningless at a 72% FP rate.)
 
+## Observation-conditioned dilation heuristic
+
+To also rule out "local extrapolation of the observation suffices",
+`scripts/eval_dilation_baseline.py` dilates the observed occupancy by r ∈ {1..6} cells
+and scores at the IoU-maximizing radius (`$WS/val_decomp/dilate_*.json`, val stride 3,
+3,000 frames/tier). It peaks at r=1, essentially tied with or below plain persistence —
+larger radii grow FP faster than recall, monotonically lowering IoU:
+
+| tier @5 s | dilation (best r=1) | recall @ FP | persistence | model |
+|---|:---:|:---:|:---:|:---:|
+| static | 0.305 | 0.416 @ 0.035 | 0.303 | 0.610 |
+| moving | 0.346 | 0.557 @ 0.039 | 0.360 | 0.723 |
+| debris | 0.342 | 0.544 @ 0.039 | 0.355 | 0.670 |
+
+Hidden structure is non-local: copying the observation, extrapolating it locally, and
+observation-blind priors all fail; only learned completion recovers it.
+
 ## Diffusion world-model variant
 
 `world_model.architecture: diffusion` (conditional DDPM over future BEV occupancy) was
