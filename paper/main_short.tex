@@ -251,7 +251,8 @@ region at 5--10\,s.
 \textbf{Ablations.} Retraining without either auxiliary channel leaves the gain intact:
 no-visibility per-tier gains at 5\,s (+0.309/+0.360/+0.313 vs full +0.306/+0.363/+0.315) are
 within CI and the no-flow rollout gain (+0.381 vs +0.320) is if anything higher; both are
-redundant (no optical flow on the critical path).
+redundant (no optical flow on the critical path); as independent retrainings that all land
+within the full model's CIs, they also bound training-seed variance.
 
 \textbf{System.} The perception-to-planning path runs at 5.97\,ms p50 / 7.00\,ms p95 (batch 1,
 deterministic U-Net), inside a 50\,ms (20\,Hz) budget; the excluded monocular-depth stage is
@@ -293,10 +294,11 @@ Calibrated amodal completion of occluded occupancy works from one monocular-dept
 transfers to never-seen rooms, and fits a real-time perception-to-planning budget; the
 empty-credit-immune micro-gain, per-episode CIs, and completion/forecasting decomposition keep
 the claim honest and, we hope, get reused. The limitations are those it surfaces:
-evaluation is in simulation (ground-truth occluded occupancy is unavailable on real footage
-without instrumentation), so we make no quantitative real-world claim, though the front-end
+evaluation is in simulation on clean simulator depth (robustness to estimated-depth noise is
+untested), so we make no quantitative real-world claim, though the front-end
 already accepts real monocular depth (Depth-Anything-V2), making sim-to-real transfer the
-natural next step; the model performs amodal
+natural next step; baselines are self-constructed (prior methods target different input
+regimes); the model performs amodal
 \emph{completion}, not multi-step \emph{forecasting}, and is framed accordingly; navigation
 misses its collision target and the audio interface is not user-evaluated (system context); and
 falling-object lead is bounded by the horizon grid.
