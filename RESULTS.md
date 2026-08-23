@@ -226,6 +226,13 @@ Depth-Anything-V2-Small alone takes **49.9 ms p50 / 50.7 ms p95** on a GTX 1080 
 honest deployment story is asynchronous pipelining: depth runs at its own rate while
 the 7 ms completion path consumes the latest depth frame at 20 Hz.
 
+Measured end-to-end (`scripts/benchmark.py --stages --with-depth`, SLURM job 63538038,
+same GPU class): depth 50.0 ms + BEV 0.40 ms + raycast 0.26 ms + world model 3.74 ms =
+**54.4 ms sequential end-to-end (18 Hz)**, audio synthesis excluded. (The 4.4 ms
+subtotal here is a 20-iteration mean without the orchestrator; the 5.97/7.00 ms
+p50/p95 in the paper is the rollout-measured perception→planning path including the
+orchestrator — do not mix the two.)
+
 ## Reproducibility
 
 All rollout numbers assume the legacy fixed-geometry env (`randomize_room=false`), which is
