@@ -287,9 +287,11 @@ optical-flow estimation from the runtime critical path.
 forward, orchestrator; batch 1, deterministic U-Net) runs at 5.97 ms p50 / 7.00 ms p95 — well
 inside a 50 ms (20 Hz) budget. The monocular-depth stage is excluded and is not free: measured in
 isolation, Depth-Anything-V2-Small takes 49.9 ms p50 / 50.7 ms p95 on the evaluation-era GPU
-(GTX 1080 Ti, 480×640 input) — comparable to the entire budget on that hardware. A deployed
-system therefore runs depth asynchronously at its own rate while the 7 ms completion path
-consumes the most recent depth frame at 20 Hz. Audio synthesis remains excluded.
+(GTX 1080 Ti, 480×640 input) — comparable to the entire budget on that hardware. Run
+sequentially, the measured end-to-end latency including depth is 54.4 ms (18 Hz) on the same
+GPU; a deployed system therefore runs depth asynchronously at its own ~20 Hz rate while the
+7 ms completion path consumes the most recent depth frame, at the cost of one frame of depth
+staleness. Audio synthesis remains excluded.
 
 **Anticipating occupancy revealed in shadow (a falling-object *proxy*).** We measure whether the
 model flags occupancy that materializes in unobserved space before it is revealed. Cell-level
