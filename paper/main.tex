@@ -17,9 +17,13 @@
 
 \title{ShadowWeave: Calibrated Amodal Occupancy Completion into Occluded Space from a Single Depth Frame}
 
+% RoboWM (NeurIPS 2026) review is double-blind on OpenReview (camera-ready is
+% de-anonymized per the CFP). For the SUBMISSION, comment the named block and
+% uncomment the anonymous one.
 \author{Kushaan Naskar\\
 University of Massachusetts Amherst\\
 \texttt{kushaannaskar@gmail.com}}
+% \author{Anonymous\\ NeurIPS 2026 RoboWM Workshop Submission}
 
 \date{}
 
@@ -408,9 +412,11 @@ optical-flow estimation from the runtime critical path.
 forward, orchestrator; batch 1, deterministic U-Net) runs at 5.97\,ms p50 / 7.00\,ms p95 --- well
 inside a 50\,ms (20\,Hz) budget. The monocular-depth stage is excluded and is not free: measured
 in isolation, Depth-Anything-V2-Small takes 49.9\,ms p50 / 50.7\,ms p95 on the evaluation-era GPU
-(GTX~1080~Ti, $480{\times}640$ input) --- comparable to the entire budget on that hardware. A
-deployed system therefore runs depth asynchronously at its own rate while the 7\,ms completion
-path consumes the most recent depth frame at 20\,Hz. Audio synthesis remains excluded.
+(GTX~1080~Ti, $480{\times}640$ input) --- comparable to the entire budget on that hardware. Run
+sequentially, the measured end-to-end latency including depth is 54.4\,ms (18\,Hz) on the same
+GPU; a deployed system therefore runs depth asynchronously at its own ${\sim}20$\,Hz rate while
+the 7\,ms completion path consumes the most recent depth frame, at the cost of one frame of
+depth staleness. Audio synthesis remains excluded.
 
 \paragraph{Anticipating occupancy revealed in shadow (a falling-object \emph{proxy}).} We measure whether the
 model flags occupancy that materializes in unobserved space before it is revealed. Cell-level
@@ -465,7 +471,9 @@ dynamics.
 \label{sec:limitations}
 
 Our evaluation is in simulation; ground-truth occluded occupancy is unavailable on real footage
-without instrumentation, so no quantitative real-world claim is made. The model performs
+without instrumentation, so no quantitative real-world claim is made. The perception front-end
+nonetheless accepts real monocular depth (Depth-Anything-V2), so sim-to-real transfer of the
+completion model is the natural next step. The model performs
 amodal \emph{completion}, not multi-step \emph{forecasting}: the pure-dynamics residual is at the noise floor,
 and we frame the contribution accordingly. Navigation does not meet its collision target and the
 audio interface is not user-evaluated; both are presented as system context. Falling-object lead
