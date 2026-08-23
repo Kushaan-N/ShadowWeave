@@ -401,7 +401,10 @@ Dropping either auxiliary input channel and retraining leaves the gain intact
 
 The no-visibility per-tier gains are within CI of the full model; the no-flow rollout gain is if
 anything higher. Both auxiliary channels are redundant, which simplifies the input and removes
-optical-flow estimation from the runtime critical path.
+optical-flow estimation from the runtime critical path. These independently retrained variants
+also bound training-run variance: every one of them (and the separately trained
+randomized-geometry model of \S\ref{sec:robustness}) lands within the full model's per-tier
+confidence intervals, so the headline gain is not an artifact of a lucky training seed.
 
 \subsection{System: latency, anticipation, navigation}
 \label{sec:system}
@@ -463,7 +466,13 @@ dynamics.
 Our evaluation is in simulation; ground-truth occluded occupancy is unavailable on real footage
 without instrumentation, so no quantitative real-world claim is made. The perception front-end
 nonetheless accepts real monocular depth (Depth-Anything-V2), so sim-to-real transfer of the
-completion model is the natural next step. The model performs
+completion model is the natural next step --- noting that evaluation currently consumes the
+simulator's clean depth, so robustness of the completion to estimated-depth noise is untested.
+We compare against strong self-constructed baselines rather than prior methods, which target
+different input regimes (e.g., ProxMaP's top-down RGB-D view); a head-to-head on a shared
+benchmark is future work. Our results characterize a single 31M single-frame CNN: the
+evaluation protocol is architecture-agnostic, and the negative result on forecasting applies to
+this model class, not necessarily to larger or recurrent models. The model performs
 amodal \emph{completion}, not multi-step \emph{forecasting}: the pure-dynamics residual is at the noise floor,
 and we frame the contribution accordingly. Navigation does not meet its collision target and the
 audio interface is not user-evaluated; both are presented as system context. Falling-object lead
