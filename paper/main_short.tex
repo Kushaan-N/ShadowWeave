@@ -189,9 +189,11 @@ we also evaluate a pose-marginal dataset prior (mean training-set occupancy in t
 frame, no observation at all), swept over thresholds and scored at its most favorable one. It reaches only 0.08--0.10 micro shadow IoU across tiers (0.09 on the
 randomized-geometry set): to recall hidden structure (0.87--0.92) it must blanket 72--79\% of
 genuinely empty hidden space with false positives, whereas the model achieves 0.61--0.72 IoU at
-a 1.4--3.4\% false-positive rate. Completion is thus observation-conditional inference, not a
-memorized average room; with geometry randomization (below), this rules out memorized layouts
-and marginals alike.
+a 1.4--3.4\% false-positive rate. An observation-\emph{conditioned} heuristic (dilating observed
+obstacles into shadow, scored at its best radius) peaks at 0.31--0.35 --- at or below
+persistence itself. Completion is thus learned observation-conditional inference; with geometry
+randomization (below), this rules out memorized layouts, marginals, and local extrapolation
+alike.
 
 \textbf{Completion, not clairvoyance.} Decomposing the shadow mask attributes the gain almost
 entirely to amodal completion (Table~\ref{tab:decomp}). Excluding all persistent structure, the
