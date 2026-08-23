@@ -1,12 +1,14 @@
-% ShadowWeave workshop paper -- compressed 4-page version.
-% NOTE: This uses a generic NeurIPS-workshop-style preamble. At submission time,
-% replace the geometry/font setup below with the real workshop style file:
-% \usepackage{neurips_2026}
-\documentclass[10pt,letterpaper]{article}
+% ShadowWeave workshop paper -- compressed 4-page version, NeurIPS 2026 style.
+% Default (no option) = SUBMISSION mode: anonymized automatically + line numbers,
+% which is what RoboWM's double-blind OpenReview review wants. For the de-anonymized
+% camera-ready, switch to \usepackage[final]{neurips_2026}.
+\documentclass{article}
+\usepackage{neurips_2026}
+% \usepackage[final]{neurips_2026}   % camera-ready
 
-\usepackage[textwidth=5.5in,textheight=9in]{geometry}
-\usepackage{times}
-\usepackage[numbers]{natbib}
+\usepackage[utf8]{inputenc}
+% NOTE: no [T1]{fontenc} — this TeX Live lacks cm-super/lmodern, so T1 falls back to
+% fuzzy bitmap PK fonts; default (OT1) Computer Modern stays fully vector.
 \usepackage{graphicx}
 \usepackage{booktabs}
 \usepackage{amsmath}
@@ -17,15 +19,10 @@
 
 \title{ShadowWeave: Calibrated Amodal Occupancy Completion into Occluded Space from a Single Depth Frame}
 
-% RoboWM (NeurIPS 2026) review is double-blind on OpenReview (camera-ready is
-% de-anonymized per the CFP). For the SUBMISSION, comment the named block and
-% uncomment the anonymous one.
-% \author{Anonymous\\ NeurIPS 2026 RoboWM Workshop Submission}
+% The style file anonymizes this automatically in submission mode.
 \author{Kushaan Naskar\\
-University of Massachusetts Amherst\\
-\texttt{kushaannaskar@gmail.com}}
-
-\date{}
+  University of Massachusetts Amherst\\
+  \texttt{kushaannaskar@gmail.com}}
 
 \begin{document}
 
