@@ -88,6 +88,17 @@ def plot_architecture(out_dir: pathlib.Path) -> None:
     _arrow(ax, 0.80, ym - 0.235 / 2, 0.63, yd + 0.17 / 2, color=ORANGE)
     _arrow(ax, 0.80, ym - 0.235 / 2, 0.855, yd + 0.17 / 2, color=ORANGE)
 
+    # Measured latency (slurm job 63538038, GTX 1080 Ti) — fills the lower-left and keeps
+    # the figure honest about what the real-time claim covers.
+    ax.text(0.235, 0.24,
+            "measured latency (GTX 1080 Ti):\n"
+            "depth 50.0 ms + completion 4.4 ms = 54.4 ms end-to-end (18 Hz)\n"
+            "pipelined: 7 ms p95 perception→planning at 20 Hz\n"
+            "on the latest depth frame (audio synthesis excluded)",
+            ha="center", va="center", fontsize=8.5, color=GREY,
+            bbox=dict(boxstyle="round,pad=0.5", facecolor="#f5f5f5",
+                      edgecolor="#cccccc", linewidth=1.0))
+
     # Labels / framing
     ax.text(0.5, 0.965, "ShadowWeave: calibrated amodal occupancy completion into occluded space",
             ha="center", va="center", fontsize=12.5, fontweight="bold", color="#111")
