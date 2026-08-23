@@ -13,7 +13,8 @@ Reads the per-tier json written by eval_val_decomp.py (one dir per model) and pr
      bar" figure, and the left/right split shows the gain is completion (large, CI
      clear of zero) not pure forecasting (nostatic ~0).
 
-Figures are white-background / colorblind-safe for direct inclusion in the paper.
+Figures are white-background / colorblind-safe and drawn near their printed size
+(a NeurIPS column is 5.5 in), so fonts stay legible after LaTeX scaling.
 
     python scripts/plot_decomp.py --dir <WS>/val_decomp/full --out figures/ \
         --randgeom <WS>/val_decomp/randgeom.json
@@ -58,7 +59,7 @@ def plot_curves(data, out_path):
               ("dynamic_recall_model", None, "dynamic recall in shadow"),
               ("static_coverage_model", "static_coverage_persist",
                "persistent-structure recall\n(amodal completion)")]
-    fig, axes = plt.subplots(1, 3, figsize=(13, 4))
+    fig, axes = plt.subplots(1, 3, figsize=(9.5, 3.2))
     for ax, (mkey, pkey, title) in zip(axes, panels):
         for t, d in data.items():
             hs, ys = _series(d, mkey)
@@ -100,7 +101,7 @@ def plot_gain_ci(data, randgeom, out_path):
     # Left: micro shadow gain (dominated by completion) — large, CI clear of zero.
     # Right: nostatic gain (persistent structure removed) — the pure-forecasting
     # residual, ~0. Showing both with error bands is the honest headline.
-    fig, (axL, axR) = plt.subplots(1, 2, figsize=(11, 4.3))
+    fig, (axL, axR) = plt.subplots(1, 2, figsize=(8.0, 3.2))
     for key, ax, title in ((("micro_shadow_gain"), axL, "micro shadow gain\n(completion + forecasting)"),
                            (("micro_shadow_gain_nostatic"), axR,
                             "nostatic micro gain\n(persistent structure removed)")):
@@ -130,7 +131,7 @@ def plot_reliability(data, out_path):
     # Use the debris (or first available) tier's 5s reliability curve.
     tier = "debris" if "debris" in data else next(iter(data))
     cal = data[tier]["calibration"]["5s"]
-    fig, ax = plt.subplots(figsize=(5.5, 5))
+    fig, ax = plt.subplots(figsize=(3.8, 3.5))
     ax.plot([0, 1], [0, 1], "--", color="#999", label="perfect")
     for region, color in (("shadow", "#D55E00"), ("observed", "#0072B2")):
         bins = cal[region]["reliability"] or []
