@@ -279,9 +279,15 @@ favorable one. It reaches only 0.08--0.10 micro shadow IoU across tiers, and 0.0
 randomized-geometry set: to recall hidden structure (0.87--0.92) it must blanket 72--79\% of
 genuinely empty hidden space with false positives, whereas the model achieves 0.61--0.72 IoU
 at a 1.4--3.4\% false-positive rate.
-Completion is therefore observation-conditional inference, not a memorized average room;
-together with the geometry-randomization result (\S\ref{sec:robustness}) this rules out both
-memorized layouts and memorized marginals (full table in Appendix~\ref{app:prior}).
+A complementary observation-conditioned heuristic --- dilating every observed obstacle into the
+shadow, swept over radii and scored at its best --- peaks at its smallest radius with micro
+shadow IoU 0.31--0.35, at or marginally below persistence itself; growing the radius only
+trades false positives for recall, monotonically lowering IoU. Hidden structure is non-local:
+neither copying the observation, extrapolating it locally, nor an observation-blind prior
+recovers it. Completion is therefore learned observation-conditional inference; together with
+the geometry-randomization result (\S\ref{sec:robustness}) this rules out memorized layouts,
+memorized marginals, and trivial extrapolation alike (full tables in
+Appendix~\ref{app:prior}).
 
 \subsection{What the gain is: completion, not clairvoyance}
 \label{sec:completion}
@@ -522,7 +528,7 @@ static tier throughout.
   \end{tabular}
 \end{table}
 
-\section{Observation-blind prior baseline}
+\section{Heuristic baselines: observation-blind prior and dilation}
 \label{app:prior}
 
 The pose-marginal prior is the mean training-set occupancy grid in the egocentric frame,
@@ -547,6 +553,31 @@ at its best threshold the prior carpet-bombs the dynamic region too, which is me
     moving & 0.080 & 0.865 & 0.722 & 0.723 @ 0.015 \\
     debris & 0.089 & 0.869 & 0.717 & 0.670 @ 0.014 \\
     rand.\ geometry & 0.087 & 0.921 & 0.793 & 0.655 @ 0.021 \\
+    \bottomrule
+  \end{tabular}
+\end{table}
+
+The observation-\emph{conditioned} counterpart --- binary dilation of the observed occupancy by
+$r \in \{1,\dots,6\}$ cells (one cell ${\approx}10$\,cm), reported at the IoU-maximizing radius
+--- probes whether local extrapolation of the observation suffices. It does not
+(Table~\ref{tab:dilate}): the heuristic peaks at $r{=}1$, essentially tied with or below plain
+persistence, because at matched false-positive rates it recalls only 0.42--0.56 of hidden
+structure versus the model's 0.83--0.93, and every larger radius grows false positives faster
+than recall, monotonically lowering IoU.
+
+\begin{table}[ht]
+  \centering
+  \small
+  \caption{Observation-conditioned dilation heuristic at its best radius ($r{=}1$) vs
+  persistence and the model, micro shadow IoU @5\,s.}
+  \label{tab:dilate}
+  \begin{tabular}{lcccc}
+    \toprule
+    tier & dilation (best $r$) & dilation recall @ FP & persistence & model \\
+    \midrule
+    static & 0.305 & 0.416 @ 0.035 & 0.303 & 0.610 \\
+    moving & 0.346 & 0.557 @ 0.039 & 0.360 & 0.723 \\
+    debris & 0.342 & 0.544 @ 0.039 & 0.355 & 0.670 \\
     \bottomrule
   \end{tabular}
 \end{table}
