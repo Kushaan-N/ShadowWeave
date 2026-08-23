@@ -122,8 +122,15 @@ def bench_data(cfg, data_root: str, workers: list[int]) -> None:
     print("  (compare against the model's samples/s above — the smaller number is the ceiling)")
 
 
-def bench_stages(cfg, device) -> None:
-    """Per-stage inference latency for the real-time budget."""
+def bench_stages(cfg, device, with_depth: bool = False, cam_hw: tuple[int, int] = (480, 640)) -> None:
+    """Per-stage inference latency for the real-time budget.
+
+    The perception-to-planning stages (bev projection, shadow raycast, world model) start
+    from a depth map. With ``with_depth`` we also time the monocular-depth network itself
+    (Depth-Anything-V2) on a realistic ``cam_hw`` RGB frame, so the reported end-to-end
+    number includes depth acquisition — the piece the perception-to-planning budget excludes.
+    HRTF audio synthesis is still excluded.
+    """
     from shadowweave.shadow.bev import BEVProjector
     from shadowweave.shadow.raycast import ShadowRaycaster
 
@@ -134,7 +141,26 @@ def bench_stages(cfg, device) -> None:
     model = build_world_model(cfg).to(device).eval()
     stack = torch.rand(1, 4, cfg.bev.size, cfg.bev.size, device=device)
 
+    timings: dict[str, float] = {}
+
+    # Optional monocular-depth stage — timed separately so both the end-to-end and the
+    # perception-to-planning subtotals are reported honestly.
+    depth_dt = None
+    if with_depth:
+        try:
+            from shadowweave.ingestion.depth import DepthEstimator
+            est = DepthEstimator(cfg, device=str(device))
+            est.load()  # exclude one-time model load from the timed iterations
+            rgb = np.random.randint(0, 255, (cam_hw[0], cam_hw[1], 3), dtype=np.uint8)
+            depth_dt = _time_it(lambda: est.forward(rgb), device, warmup=3, iters=20)
+        except Exception as e:  # missing weights / transformers — skip, don't fail the run
+            print(f"\n[depth stage skipped] {type(e).__name__}: {e}")
+
     print("\nInference latency (batch 1)")
+    if depth_dt is not None:
+        timings["depth"] = depth_dt
+        print(f"  {'monocular depth':16s} {depth_dt*1000:7.2f} ms  ({1/depth_dt:7.0f} Hz)"
+              f"   [Depth-Anything-V2-S, {cam_hw[0]}x{cam_hw[1]} RGB]")
     with torch.no_grad():
         for name, fn in [
             ("bev projection", lambda: proj(depth)),
@@ -142,8 +168,18 @@ def bench_stages(cfg, device) -> None:
             ("world model", lambda: model(stack)),
         ]:
             dt = _time_it(fn, device, iters=20)
+            timings[name] = dt
             print(f"  {name:16s} {dt*1000:7.2f} ms  ({1/dt:7.0f} Hz)")
-    print(f"  target: full pipeline < 100ms, shadow-ray >= {cfg.shadow.target_hz} Hz")
+
+    p2p = timings["bev projection"] + timings["shadow raycast"] + timings["world model"]
+    print(f"\n  perception->planning subtotal  {p2p*1000:7.2f} ms  ({1/p2p:6.0f} Hz)"
+          f"   (depth + audio excluded)")
+    if depth_dt is not None:
+        e2e = p2p + depth_dt
+        print(f"  end-to-end incl. depth         {e2e*1000:7.2f} ms  ({1/e2e:6.0f} Hz)"
+              f"   (audio synthesis excluded)")
+    print(f"  target: full pipeline < 100ms (20 Hz budget = 50ms), "
+          f"shadow-ray >= {cfg.shadow.target_hz} Hz")
 
 
 def main() -> None:
@@ -152,6 +188,10 @@ def main() -> None:
     ap.add_argument("--batches", type=int, nargs="*", default=[8, 16, 32, 64, 128])
     ap.add_argument("--workers", type=int, nargs="*", default=[0, 2, 4, 8])
     ap.add_argument("--stages", action="store_true", help="per-stage inference latency only")
+    ap.add_argument("--with-depth", action="store_true",
+                    help="also time the monocular-depth network for an end-to-end number")
+    ap.add_argument("--cam-hw", type=int, nargs=2, default=[480, 640],
+                    help="RGB frame size (H W) fed to the depth network")
     ap.add_argument("--overrides", nargs="*", default=[])
     args = ap.parse_args()
 
@@ -163,11 +203,11 @@ def main() -> None:
         print(f"  {p.name}, {p.total_memory/1e9:.1f} GB, capability {p.major}.{p.minor}")
 
     if args.stages:
-        bench_stages(cfg, device)
+        bench_stages(cfg, device, with_depth=args.with_depth, cam_hw=tuple(args.cam_hw))
         return
 
     bench_model(cfg, device, args.batches, amp_modes=[False, True])
-    bench_stages(cfg, device)
+    bench_stages(cfg, device, with_depth=args.with_depth, cam_hw=tuple(args.cam_hw))
     if args.data:
         bench_data(cfg, args.data, args.workers)
 
