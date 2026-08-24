@@ -386,3 +386,51 @@ under it.
 
 See `RELATED_WORK.md` for verified BibTeX (ProxMaP, VisHall3D, OccWorld, MonoScene, VoxFormer,
 Occ3D, Khurana et al.).
+
+---
+
+## Appendix A — Shadow gain across horizons
+
+The main text reports the 5 s horizon. Shadow gain over the best baseline at all horizons
+(policy rollouts, and the empty-credit-inflated macro per-tier for completeness; the defended
+empty-credit-immune micro gains with CIs are in §4.2):
+
+| horizon | shadow gain (rollout) | macro shadow gain, per tier (static / moving / debris) |
+|--------:|:---:|:---:|
+| 1 s | +0.325 | +0.354 / +0.379 / +0.375 |
+| 3 s | +0.322 | +0.354 / +0.382 / +0.366 |
+| 5 s | +0.320 | +0.354 / +0.380 / +0.356 |
+| 10 s | +0.178 | +0.353 / +0.377 / +0.334 |
+
+The micro gain is nearly flat across horizons (Fig. `shadow_gain_ci.png`), consistent with the
+gain being amodal completion of persistent structure rather than horizon-dependent forecasting.
+
+## Appendix B — Baseline robustness
+
+Two stronger-than-persistence baselines confirm that recovering hidden structure requires
+observation-conditional learned completion, not a memorized prior or local extrapolation. All @5 s.
+
+**Observation-blind dataset prior** (pose-marginal mean training occupancy, no observation,
+swept to its most favorable threshold; 9,000 frames/tier):
+
+| tier | prior micro shadow IoU | structure recall | FP on empty hidden | model (contrast) |
+|---|:---:|:---:|:---:|:---:|
+| static | 0.102 | 0.879 | 0.723 | 0.610 @ FP 0.034 |
+| moving | 0.080 | 0.865 | 0.722 | 0.723 @ FP 0.015 |
+| debris | 0.089 | 0.869 | 0.717 | 0.670 @ FP 0.014 |
+| randomized geometry | 0.087 | 0.921 | 0.793 | 0.655 @ FP 0.021 |
+
+The prior reaches high recall only by blanketing ~72–79% of genuinely empty hidden space with
+false positives; its best micro shadow IoU is 0.08–0.10 vs the model's 0.61–0.72.
+
+**Observation dilation heuristic** (observed occupancy dilated by r∈{1..6} cells, scored at the
+IoU-maximizing radius; peaks at r=1):
+
+| tier | dilation (best r=1) | recall @ FP | persistence | model |
+|---|:---:|:---:|:---:|:---:|
+| static | 0.305 | 0.416 @ 0.035 | 0.303 | 0.610 |
+| moving | 0.346 | 0.557 @ 0.039 | 0.360 | 0.723 |
+| debris | 0.342 | 0.544 @ 0.039 | 0.355 | 0.670 |
+
+Local extrapolation is essentially tied with or below plain persistence; larger radii trade
+false positives for recall and monotonically lower IoU. Hidden structure is non-local.
