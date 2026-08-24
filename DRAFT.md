@@ -19,21 +19,25 @@ against RESULTS.md before submission. Venue-agnostic; tighten to the CFP page li
 
 ## Abstract (~200 words, drafted)
 
-A mobile agent must reason about space it cannot currently see — the region occluded by
-walls and obstacles ("shadow"). We ask how well a model can **complete** occupancy in that
-occluded region from a **single monocular-depth frame**, and — crucially — whether it knows
-*when it is guessing*. ShadowWeave projects one depth frame into an egocentric bird's-eye-view
-(BEV) occupancy grid, marks the unobserved cells with an explicit shadow mask, and predicts
-occupancy inside that mask together with a per-cell uncertainty. On a MuJoCo indoor
-benchmark, the model beats a persistence baseline by a micro-averaged shadow-IoU gain of
-**+0.31 to +0.36 @5 s** (95 % bootstrap CIs over episodes clear of zero at every horizon),
-and its uncertainty is **better calibrated inside shadow (ECE 0.043–0.047) than in directly
-observed space**. We introduce a decomposition that separates *amodal completion* of
-persistent hidden structure from *temporal forecasting* of dynamics, and use it to make an
-honest claim: the gain is almost entirely completion — the pure-forecasting residual is at
-the noise floor. Randomizing room geometry per episode leaves the gain unchanged on rooms
-the model never saw, ruling out memorization. The completed grid and its uncertainty drive
-an eyes-free spatial-audio navigation interface within a 7 ms perception-to-planning budget.
+A mobile agent must reason about space it cannot currently see — the region occluded by the
+walls and obstacles it is navigating around ("shadow"). We study how well a model can
+**complete** occupancy in that occluded region from a **single monocular-depth frame**, and,
+crucially, whether it knows *when it is guessing*. ShadowWeave projects one depth frame into an
+egocentric bird's-eye-view (BEV) occupancy grid, marks the unobserved cells with an explicit
+shadow mask, and predicts occupancy inside that mask together with a per-cell uncertainty. On a
+MuJoCo indoor benchmark, the model beats a persistence baseline by a micro-averaged shadow-IoU
+gain of **+0.31 to +0.36 at a 5 s horizon** (95% per-episode bootstrap CIs clear of zero at
+every horizon), far exceeds an observation-blind dataset prior even at the prior's best
+threshold (0.61–0.72 IoU vs 0.08–0.10), and its uncertainty is **better calibrated inside
+shadow (ECE 0.043–0.047) than in directly observed space (0.058–0.086)**. We introduce a decomposition that separates *amodal
+completion* of persistent hidden structure from *temporal forecasting* of dynamics, and use it to
+make an honest claim: the gain is almost entirely completion — the pure-forecasting residual sits
+at the noise floor. Randomizing room geometry per episode leaves the gain statistically unchanged
+on rooms the model never saw, ruling out memorization of a fixed layout. The completed grid and
+its uncertainty drive an eyes-free spatial-audio navigation interface at 7 ms (p95)
+perception-to-planning latency, well inside a 20 Hz budget. We release the evaluation methodology — an empty-credit-immune
+micro-averaged gain, a completion/forecasting decomposition, and per-episode confidence
+intervals — as a reusable protocol for honest occupancy-completion claims.
 
 ---
 
