@@ -18,13 +18,17 @@ MuJoCo indoor benchmark, the model beats a persistence baseline by a micro-avera
 gain of **+0.31 to +0.36 at a 5 s horizon** (95% per-episode bootstrap CIs clear of zero at
 every horizon), far exceeds an observation-blind dataset prior even at the prior's best
 threshold (0.61–0.72 IoU vs 0.08–0.10), and its uncertainty is **better calibrated inside
-shadow (ECE 0.043–0.047) than in directly observed space (0.058–0.086)**. We introduce a decomposition that separates *amodal
-completion* of persistent hidden structure from *temporal forecasting* of dynamics, and use it to
-make an honest claim: the gain is almost entirely completion — the pure-forecasting residual sits
-at the noise floor. Randomizing room geometry per episode leaves the gain statistically unchanged
-on rooms the model never saw, ruling out memorization of a fixed layout. The completed grid and
-its uncertainty drive an eyes-free spatial-audio navigation interface at 7 ms (p95)
-perception-to-planning latency, well inside a 20 Hz budget. We release the evaluation methodology — an empty-credit-immune
+shadow (ECE 0.043–0.047, at 5 s) than in directly observed space (0.058–0.086)**. We frame
+prediction into occluded space as **world modeling of the unobserved** — inferring environment
+state where the sensor has no view — and introduce a decomposition that separates *amodal
+completion* of persistent hidden structure from *temporal forecasting* of dynamics. It yields an
+honest characterization of this single-frame world model: its predictive power is almost entirely
+spatial completion — the pure-forecasting residual is small (≤+0.007 at 5 s) and decays with
+horizon. Randomizing room geometry per episode leaves the gain statistically unchanged
+on rooms the model never saw, ruling out memorization of a fixed room shell. The completion path
+runs at 7 ms (p95), well inside a 20 Hz control budget; end-to-end with an off-the-shelf
+monocular-depth network it runs at ~18 Hz on 2017-era hardware. The completed grid and its
+uncertainty feed an eyes-free spatial-audio navigation interface as a systems demonstration. We release the evaluation methodology — an empty-credit-immune
 micro-averaged gain, a completion/forecasting decomposition, and per-episode confidence
 intervals — as a reusable protocol for honest occupancy-completion claims.
 
@@ -49,34 +53,38 @@ to improve navigation — but it emits a point estimate, with no explicit occlus
 calibrated uncertainty in the hidden cells, and no attribution of *where* its predictive power
 comes from.
 
-We present **ShadowWeave**, which from a single monocular-depth frame produces (i) an egocentric
-BEV occupancy grid, (ii) an explicit shadow mask marking the cells the sensor cannot see, and
-(iii) a calibrated per-cell occupancy probability inside that mask. We evaluate it with a
+We present **ShadowWeave**, a world model of occluded space: from a single monocular-depth frame it
+produces (i) an egocentric BEV occupancy grid, (ii) an explicit shadow mask marking the cells the
+sensor cannot see, and (iii) a calibrated per-cell occupancy probability inside that mask. Unlike
+occupancy world models built for temporal forecasting, it models the *unobserved present* —
+the state behind obstacles — and we quantify exactly how much of its predictive power is spatial
+completion versus temporal forecasting. We evaluate it with a
 protocol designed to resist the standard failure modes of occupancy metrics: an
 empty-credit-immune, micro-averaged shadow-IoU gain over a persistence baseline; per-episode
 bootstrap confidence intervals; and a static/dynamic/never decomposition that attributes the gain
 to *completion* of persistent hidden structure versus *forecasting* of dynamics. Downstream, the
-completed grid and its uncertainty drive an A* planner and a nine-zone HRTF spatial-audio
-interface for eyes-free navigation.
+completed grid and its uncertainty feed an A* planner and a nine-zone HRTF spatial-audio
+interface for eyes-free navigation, which we include as a systems demonstration.
 
 Our contributions are:
 
 - **A calibrated amodal-completion result.** From one depth frame, the model completes occluded
   occupancy with a micro-averaged shadow gain of +0.31–0.36 at 5 s (CIs clear of zero at every
-  horizon), and its in-shadow uncertainty is *better* calibrated (ECE 0.043–0.047) than in
-  observed space — evidence that the model conveys, rather than merely produces, hidden-space
-  predictions.
+  horizon), and its in-shadow uncertainty is *better* calibrated (ECE 0.043–0.047 at 5 s) than in
+  observed space.
 - **A decomposition methodology** that separates completion from forecasting. It reveals that the
-  gain is spatial completion of persistent hidden structure; the pure-forecasting residual is at
-  the noise floor (fixed static +0.000; moving tier +0.007 [+0.002, +0.012] at 5 s — statistically
+  gain is spatial completion of persistent hidden structure; the pure-forecasting residual is
+  at or near zero (fixed static +0.000; moving tier +0.007 [+0.002, +0.012] at 5 s — statistically
   significant but practically small, and decaying with horizon as real forecasting should). We
   report this negative honestly: most pooled occupancy numbers in the literature are vulnerable to
   exactly the confound this decomposition dissects.
 - **A memorization confound-kill.** Randomizing room geometry per episode leaves the gain
   statistically unchanged on never-seen rooms (+0.306 fixed vs +0.309 [+0.294, +0.324]
   randomized), showing the completion is per-scene inference, not a memorized constant layout.
-- **A real-time eyes-free system** that turns completed occupancy and its uncertainty into an
-  A* path and nine-zone spatial-audio cues at 7 ms p95 perception-to-planning latency.
+- **A real-time completion front-end.** The completion path runs at 7 ms p95 (well inside a
+  20 Hz budget); end-to-end with an off-the-shelf monocular-depth network it is ~18 Hz on
+  2017-era hardware. Its output feeds an A* + nine-zone HRTF eyes-free interface, which we
+  present as a systems demonstration (it does not yet meet navigation collision targets; §4.7).
 
 ---
 
@@ -100,8 +108,12 @@ Optical flow between consecutive BEV frames provides an optional motion channel.
 
 ### 2.2 World model
 
-A U-Net (31M parameters) takes the single-frame BEV stack and predicts occupancy at horizons of
-1, 3, 5, and 10 s as per-cell probabilities. It is trained with binary cross-entropy (positive
+We treat the network as a **world model of occluded space**: it infers the environment's occupancy
+state where the sensor has no view, rather than only labeling what is directly measured. Its
+predictive power, as §4.3 quantifies, concentrates in spatial completion of persistent hidden
+structure rather than temporal forecasting of dynamics — a property of this single-frame model
+class, made measurable by our decomposition. A U-Net (31M parameters) takes the single-frame BEV
+stack and predicts occupancy at horizons of 1, 3, 5, and 10 s as per-cell probabilities. It is trained with binary cross-entropy (positive
 class up-weighted, since BEV targets are ≈7% occupied) on 400 training episodes, with early
 stopping and exponentially-averaged (EMA) weights; we report the epoch-8 checkpoint (validation
 loss 0.300, validation IoU@5s 0.665). Ablations (§4.6) show the visibility and flow channels are
@@ -212,7 +224,7 @@ shadow gain is +0.325/+0.322/+0.320/+0.178 at 1/3/5/10 s.
 evaluate a pose-marginal dataset prior — the mean training-set occupancy in the egocentric frame,
 using no observation at all — swept over thresholds and reported at its most favorable one. It
 reaches only 0.08–0.10 micro shadow IoU across tiers, and 0.09 on the randomized-geometry set:
-to recall hidden structure (0.87–0.92) it must blanket 72–79% of genuinely empty hidden space
+to recall hidden structure (0.86–0.92) it must blanket 72–79% of genuinely empty hidden space
 with false positives, whereas the model achieves 0.61–0.72 IoU at a 1.4–3.4% false-positive
 rate. A complementary observation-conditioned heuristic — dilating every observed obstacle into
 the shadow, swept over radii and scored at its best — peaks at its smallest radius with micro
@@ -292,7 +304,7 @@ so the headline gain is not an artifact of a lucky training seed.
 ### 4.7 System: latency, anticipation, navigation
 
 **Latency.** The perception-to-planning forward path (BEV projection, raycaster, world-model
-forward, orchestrator; batch 1, deterministic U-Net) runs at 5.97 ms p50 / 7.00 ms p95 — well
+forward, orchestrator; batch 1, deterministic U-Net) runs at 6.47 ms p50 / 6.99 ms p95 — well
 inside a 50 ms (20 Hz) budget. The monocular-depth stage is excluded and is not free: measured in
 isolation, Depth-Anything-V2-Small takes 49.9 ms p50 / 50.7 ms p95 on the evaluation-era GPU
 (GTX 1080 Ti, 480×640 input) — comparable to the entire budget on that hardware. Run
