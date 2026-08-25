@@ -59,7 +59,7 @@ than dynamics.
   author    = {Sharma, Vishnu Dutt and Chen, Jingxi and Tokekar, Pratap},
   booktitle = {2023 IEEE/RSJ International Conference on Intelligent Robots and Systems (IROS)},
   year      = {2023},
-  note      = {arXiv:2305.05519}
+  note      = {arXiv:2203.04177}
 }
 
 @inproceedings{lu2025vishall3d,
