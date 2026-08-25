@@ -125,9 +125,12 @@ completion from forecasting keeps the claim honest.
 - HAVE: `shadow_gain_ci.png` (gain + CIs, randgeom overlay) → Fig for 4.1/4.3.
 - HAVE: `reliability.png` (calibration in shadow) → Fig for 4.4.
 - HAVE: `decomp_curves.png` → Fig for 4.2.
-- HAVE: `prediction_0x.png` panels → qualitative completion figure.
+- DROPPED: `prediction_0x.png` panels — the error-map row (red=FP) reads as "wrong everywhere"
+  and the BCE smear undercuts the IoU numbers; a liability, and not referenced in PAPER.md. If a
+  qualitative figure is wanted, redesign to show completion success (obstacles filled in shadow)
+  framed as calibrated uncertainty, not error maps.
 - HAVE: `architecture.{png,svg}` (system/architecture diagram, `scripts/plot_architecture.py`).
-- NEED: real-footage depth→shadow→BEV→completion panel (blocked on a clip).
+- (real-footage panel intentionally omitted — unnecessary for a workshop; §6 states synthetic-only honestly.)
 
 ## Open TODO before submission
 - Tighten to CFP page limit (need CFP).
