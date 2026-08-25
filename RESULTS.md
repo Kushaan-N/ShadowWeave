@@ -233,7 +233,7 @@ raw artifacts were overwritten and survive only in these recorded numbers.
 ## Real-time budget
 
 Forward-path latency (BEV projection + raycaster + world-model forward + orchestrator,
-batch 1, deterministic U-Net): p50 5.97 ms, p95 7.00 ms — inside the 50 ms (20 Hz)
+batch 1, deterministic U-Net): p50 6.47 ms, p95 6.99 ms (results_verify run) — inside the 50 ms (20 Hz)
 budget. This excludes the monocular-depth network (eval consumes simulator depth) and
 HRTF audio synthesis, and does not cover the diffusion variant.
 
@@ -246,7 +246,7 @@ the 7 ms completion path consumes the latest depth frame at 20 Hz.
 Measured end-to-end (`scripts/benchmark.py --stages --with-depth`, SLURM job 63538038,
 same GPU class): depth 50.0 ms + BEV 0.40 ms + raycast 0.26 ms + world model 3.74 ms =
 **54.4 ms sequential end-to-end (18 Hz)**, audio synthesis excluded. (The 4.4 ms
-subtotal here is a 20-iteration mean without the orchestrator; the 5.97/7.00 ms
+subtotal here is a 20-iteration mean without the orchestrator; the 6.47/6.99 ms
 p50/p95 in the paper is the rollout-measured perception→planning path including the
 orchestrator — do not mix the two.)
 
