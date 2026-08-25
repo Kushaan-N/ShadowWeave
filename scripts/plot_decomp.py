@@ -74,10 +74,18 @@ def plot_curves(data, out_path):
         ax.set_xlabel("horizon (s)")
         ax.grid(alpha=0.25)
     axes[0].set_ylabel("score")
-    handles, labels = axes[0].get_legend_handles_labels()
+    # Build the legend from every tier present in the data, not just those drawn in
+    # panel 0 — static appears only in the completion panel (it has no dynamic cells),
+    # so reading handles off panel 0 would leave its line unlabeled.
+    handles = [plt.Line2D([], [], color=COLORS.get(t, "#333"), marker="o")
+               for t in TIERS if t in data]
+    labels = [t for t in TIERS if t in data]
     handles.append(plt.Line2D([], [], color="#555", linestyle="--", marker="."))
     labels.append("persistence (dashed)")
-    axes[0].legend(handles, labels, fontsize=9)
+    axes[0].legend(handles, labels, fontsize=8)
+    axes[0].text(0.5, 0.02, "static: no dynamic cells (completion panel only)",
+                 transform=axes[0].transAxes, ha="center", va="bottom",
+                 fontsize=7, color="#777")
     plt.tight_layout()
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
