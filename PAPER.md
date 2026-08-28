@@ -256,7 +256,7 @@ persistent hidden structure:
 | dynamic IoU, debris tier | 0.020 → 0.019 | 0.006 → 0.023 |
 | false-positive rate on never-occupied cells | 0.014–0.034 | 0.022–0.027 |
 
-Excluding all persistent structure, the residual "nostatic" gain sits at the noise floor: fixed
+Excluding all persistent structure, the residual "nostatic" gain is at or near zero: fixed
 static +0.000, moving +0.007 (CI [+0.002, +0.012]), randomized-geometry static +0.002
 ([+0.001, +0.004]) at 5 s. The honest claim is therefore **amodal completion of hidden
 structure**, with a small but statistically significant dynamic-forecasting signal on the moving
