@@ -170,6 +170,13 @@ projects to identical cells at every horizon:
 - **NEVER** — occupied at *no* horizon: free hidden space; ≈92% of shadow. The false-positive
   test.
 
+One caveat follows from the sampling: because the split keys on the four rendered horizons
+{1, 3, 5, 10} s, dynamics faster than the 1 s grid — e.g. debris that is aloft and settles within
+the first second — are absorbed into STATIC, which biases the split toward completion. The moving
+tier, whose obstacles are in continuous motion across the whole window, is therefore the cleaner
+test of forecasting, and it still shows only a small dynamic gain (§4.3); a finer horizon grid is
+future work.
+
 Reporting completion and forecasting separately is what lets us state honestly that the gain is
 completion, not clairvoyance — a distinction the pooled shadow-IoU hides.
 
@@ -275,14 +282,19 @@ nothing; completion is per-scene inference.
 
 ### 4.5 Calibration in shadow
 
-At the 5 s horizon, in-shadow ECE is 0.043–0.047 across tiers — *better* than in observed space
-(0.058–0.086) — with Brier 0.022–0.036 (Fig. `reliability.png`); excluding the persistent
-structure entirely, in-shadow ECE remains 0.055–0.056 on the tiers with dynamic content (on the
-static tier the structure-excluded region has no positive labels, so no calibration curve exists
-there), so the calibration is not carried by the easy always-occupied cells. The model is underconfident in the mid-range but places little mass
-there. Calibration is not an artifact of the fixed room: on randomized geometry,
-in-shadow ECE is 0.050–0.067 vs observed 0.056–0.077, with shadow becoming the better-calibrated
-region at the longer 5–10 s horizons.
+Shadow is ~92% empty, so a raw in-shadow ECE is easy to make small — probability mass clusters
+near the prior. We therefore lead with the harder number: **excluding the persistent structure
+entirely** (the walls and settled cells that dominate the mask), in-shadow ECE at 5 s remains a
+low 0.055–0.056 on the tiers with dynamic content (on the static tier the structure-excluded
+region has no positive labels, so no calibration curve exists there). Calibration is thus carried
+by the genuinely uncertain cells, not the easy always-occupied ones. On the full shadow mask at
+5 s, in-shadow ECE is 0.043–0.047 across tiers — lower than in observed space (0.058–0.086), with
+Brier 0.022–0.036 (Fig. `reliability.png`) — though we note this shadow-vs-observed edge is aided
+by shadow's emptiness and is a secondary observation, not the primary claim. The model is
+underconfident in the mid-range but places little mass there. Calibration is not an artifact of
+the fixed room: on randomized geometry, in-shadow ECE is 0.050–0.067 vs observed 0.056–0.077,
+with shadow the better-calibrated region only at the longer 5–10 s horizons (at 1 s the two are
+comparable).
 
 ### 4.6 Ablations: occupancy alone carries the signal
 
@@ -301,7 +313,7 @@ also bound training-run variance: every one of them (and the separately trained
 randomized-geometry model of §4.4) lands within the full model's per-tier confidence intervals,
 so the headline gain is not an artifact of a lucky training seed.
 
-### 4.7 System: latency, anticipation, navigation
+### 4.7 System: latency and navigation
 
 **Latency.** The perception-to-planning forward path (BEV projection, raycaster, world-model
 forward, orchestrator; batch 1, deterministic U-Net) runs at 6.47 ms p50 / 6.99 ms p95 — well
@@ -313,18 +325,10 @@ GPU; a deployed system therefore runs depth asynchronously at its own ~20 Hz rat
 7 ms completion path consumes the most recent depth frame, at the cost of one frame of depth
 staleness. Audio synthesis remains excluded.
 
-**Anticipating occupancy revealed in shadow (a falling-object *proxy*).** We measure whether the
-model flags occupancy that materializes in unobserved space before it is revealed. Cell-level
-detection is 0.787 at a horizon-granular mean lead of 2.62 s. A component-level variant that
-scores each connected arrival region gives detection 0.752 and exposes what the cell-level
-false-alarm rate (0.021) hides: component-level precision is only 0.714. Three definitional
-caveats apply: events are counted per due prediction (one object aloft is scored at every issue
-step and horizon it is due, not once per object); "arrival" keys on unobserved-at-issue rather
-than newly-occupied cells, so occluded static geometry revealed by agent motion also counts and
-the metric pools all tiers; and precision is an unmatched majority-overlap over predicted
-components, sensitive to fragmentation. Lead time is bounded by the {1,3,5,10} s horizon grid —
-an interface limit — and the ≥3 s target is not met. We report this metric as a diagnostic, not
-a strength.
+We also probed whether the model flags occupancy that materializes in shadow before it is
+revealed. Because that metric conflates falling objects with static geometry revealed by agent
+motion and does not meet its lead-time target, we report it only as a diagnostic in Appendix C,
+not as a result or a contribution.
 
 **Navigation.** With the completed grid feeding the planner, the trained reactive policy achieves a
 per-episode collision rate of 0.367 (vs 0.60 untrained) and path straightness 0.773, but does not
@@ -375,10 +379,10 @@ different input regimes (e.g., ProxMaP's top-down RGB-D view); a head-to-head on
 benchmark is future work. Our results characterize a single 31M single-frame CNN: the
 evaluation protocol is architecture-agnostic, and the negative result on forecasting applies to
 this model class, not necessarily to larger or recurrent models. The model performs
-amodal *completion*, not multi-step *forecasting*: the pure-dynamics residual is at the noise floor,
-and we frame the contribution accordingly. Navigation does not meet its collision target and the
-audio interface is not user-evaluated; both are presented as system context. Falling-object lead
-time is bounded by the discrete horizon grid.
+amodal *completion*, not multi-step *forecasting*: the pure-dynamics residual is small (a
+statistically significant but ≤+0.007 gain at 5 s), and we frame the contribution accordingly.
+Navigation does not meet its collision target and the audio interface is not user-evaluated; both
+are presented as system context.
 
 ---
 
@@ -446,3 +450,19 @@ IoU-maximizing radius; peaks at r=1):
 
 Local extrapolation is essentially tied with or below plain persistence; larger radii trade
 false positives for recall and monotonically lower IoU. Hidden structure is non-local.
+
+## Appendix C — Occupancy-arrival diagnostic (not falling-object anticipation)
+
+As a diagnostic we measured whether the model puts probability on cells that become occupied in
+shadow before they are directly revealed. Cell-level detection is 0.787 at a horizon-granular
+mean lead of 2.62 s; a component-level variant that scores each connected arrival region
+independently gives detection 0.752 and reveals what the cell-level false-alarm rate (0.021)
+hides — component-level precision is only 0.714 (≈29% of predicted arrival blobs are spurious).
+We keep this out of the main results because it does not measure what a "falling-object" metric
+should: (i) events are counted per due prediction (one object aloft is scored at every issue step
+and horizon it is due, not once per physical object); (ii) an "arrival" keys on
+unobserved-at-issue rather than newly-occupied cells, so occluded *static* geometry revealed by
+agent motion is also counted, and the metric pools all tiers; and (iii) lead time is bounded by
+the discrete {1, 3, 5, 10} s horizon grid, so the ≥3 s target is neither met nor meaningfully
+measurable at this granularity. We report it only to characterize the model's behavior, not as a
+capability claim.
