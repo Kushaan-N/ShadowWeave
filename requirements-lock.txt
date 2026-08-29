@@ -77,6 +77,8 @@ pydub==0.25.1
 Pygments==2.20.0
 PyOpenGL==3.1.10
 pyparsing==3.3.2
+pypdf==6.16.1
+pypdfium2==5.13.0
 pytest==9.1.1
 python-dateutil==2.9.0.post0
 python-multipart==0.0.32
@@ -90,7 +92,7 @@ safetensors==0.8.0
 scipy==1.17.1
 semantic-version==2.10.0
 sentry-sdk==2.66.1
--e git+ssh://git@github.com/Kushaan-N/ShadowWeave.git@92ea8ab0ae4b2fcb9462a8327848fbfc4b42053a#egg=shadowweave
+-e git+ssh://git@github.com/Kushaan-N/ShadowWeave.git@1920bcf5d933dd44a4e40b89753346cbdeb363e9#egg=shadowweave
 shellingham==1.5.4
 six==1.17.0
 sounddevice==0.5.5
