@@ -29,8 +29,9 @@
 \maketitle
 
 \begin{abstract}
-A mobile agent must reason about the space occluded by the very obstacles it navigates around
-(``shadow''); we study how well a model can \textbf{complete} occupancy there from a
+An embodied agent must model the physical scene it cannot directly see --- the occupancy occluded
+by the obstacles it moves among (``shadow''); a world model of only the visible surface is blind
+to half its workspace. We study how well a model can \textbf{complete} occupancy there from a
 \textbf{single monocular-depth frame}, and whether it knows \emph{when it is guessing}.
 ShadowWeave projects one depth frame into an egocentric bird's-eye-view (BEV) occupancy grid,
 marks unobserved cells with an explicit shadow mask, and predicts occupancy and per-cell
@@ -38,43 +39,49 @@ uncertainty inside that mask. On a MuJoCo indoor benchmark, the model beats a pe
 baseline by a micro-averaged shadow-IoU gain of \textbf{+0.31 to +0.36 at a 5\,s horizon} (95\%
 per-episode bootstrap CIs clear of zero at every horizon), far exceeds an observation-blind
 dataset prior, and its uncertainty is \textbf{better calibrated inside shadow (ECE
-0.043--0.047) than in directly observed space (0.058--0.086)}. A decomposition separating \emph{amodal completion} from \emph{temporal
-forecasting} shows the gain is almost entirely completion; the pure-forecasting residual sits at
-the noise floor. Randomizing room geometry per episode leaves
-the gain statistically unchanged on never-seen rooms, ruling out memorization. The completed
-grid and its uncertainty drive an eyes-free spatial-audio interface at 7\,ms (p95)
-perception-to-planning latency; we release the methodology as a reusable protocol for honest
-occupancy-completion claims.
+0.043--0.047, at 5\,s) than in directly observed space (0.058--0.086)}. Framing this as world
+modeling of the unobserved, a decomposition separating \emph{amodal completion} from
+\emph{temporal forecasting} shows the gain is almost entirely completion --- the pure-forecasting
+residual is small ($\le$+0.007 at 5\,s). Randomizing room geometry per episode leaves the gain
+statistically unchanged on never-seen rooms, ruling out memorization of a fixed shell. The
+completion path runs at 7\,ms (p95); end-to-end with an off-the-shelf monocular-depth network it
+is ${\sim}18$\,Hz on 2017-era hardware. It feeds an eyes-free spatial-audio interface as a
+demonstration; we release the methodology as a reusable protocol for honest occupancy-completion
+claims.
 \end{abstract}
 
 \section{Introduction}
 \label{sec:intro}
 
-Agents --- a person entering a corridor, a robot rounding a shelf, a blind traveler crossing a
-room --- act in space they cannot see; for safety-critical, eyes-free use, inference about that
-space needs an honest estimate of its own reliability: a confident hallucination of clear space
-behind a wall is worse than a calibrated ``I don't know.'' Prior work addresses parts of this problem but not their conjunction
-(\S\ref{sec:related}).
-\textbf{ShadowWeave} produces, from a single monocular-depth frame, (i) an egocentric BEV
-occupancy grid, (ii) an explicit shadow mask marking cells the sensor cannot see, and (iii) a
-calibrated per-cell occupancy probability inside that mask. Our contributions are:
+Any embodied agent acting in the physical world must reason about space it cannot directly
+observe --- the occupancy occluded by the obstacles it moves among. A world model of only the
+visible surface is blind to half its workspace, and completing that hidden state is a prerequisite
+for reasoning about what happens next; for any downstream use, that inference is trustworthy only
+with an honest estimate of its own reliability: a confident hallucination of clear space behind a
+wall is worse than a calibrated ``I don't know.'' Prior work addresses parts of this problem but
+not their conjunction (\S\ref{sec:related}).
+\textbf{ShadowWeave}, a world model of occluded space, produces from a single monocular-depth
+frame (i) an egocentric BEV occupancy grid, (ii) an explicit shadow mask marking cells the sensor
+cannot see, and (iii) a calibrated per-cell occupancy probability inside that mask. Our
+contributions are:
 
 \begin{itemize}\itemsep1pt\topsep1pt\parskip0pt\parsep1pt
 \item \textbf{A calibrated amodal-completion result.} From one depth frame, the model completes occluded
   occupancy with a micro-averaged shadow gain of +0.31--0.36 at 5\,s (CIs clear of zero at every
-  horizon), and its in-shadow uncertainty is \emph{better} calibrated (ECE 0.043--0.047) than in
-  observed space --- the model conveys, not merely produces, hidden-space predictions.
+  horizon), and its in-shadow uncertainty is \emph{better} calibrated (ECE 0.043--0.047 at 5\,s) than in
+  observed space.
 \item \textbf{A decomposition methodology} that separates completion from forecasting. It reveals that the
-  gain is spatial completion of persistent hidden structure; the pure-forecasting residual is at
-  the noise floor (fixed static +0.000; moving tier +0.007 [+0.002, +0.012] at 5\,s ---
+  gain is spatial completion of persistent hidden structure; the pure-forecasting residual is
+  at or near zero (fixed static +0.000; moving tier +0.007 [+0.002, +0.012] at 5\,s ---
   significant but practically small, decaying with horizon as real forecasting should). We report
   this negative honestly: most pooled occupancy numbers in the literature share exactly this
   confound.
 \item \textbf{A memorization confound-kill.} Randomizing room geometry per episode leaves the gain
   statistically unchanged on never-seen rooms (+0.306 fixed vs +0.309 [+0.294, +0.324]
   randomized), showing completion is per-scene inference, not a memorized layout.
-\item \textbf{A real-time eyes-free system} that turns completed occupancy and its uncertainty into an
-  A* path and nine-zone spatial-audio cues at 7\,ms p95 perception-to-planning latency.
+\item \textbf{A real-time completion front-end} (7\,ms p95 completion path, well inside 20\,Hz;
+  ${\sim}18$\,Hz end-to-end with off-the-shelf depth on 2017-era hardware), feeding an A* +
+  nine-zone HRTF eyes-free interface as a systems demonstration (\S\ref{sec:experiments}).
 \end{itemize}
 
 \section{Method}
@@ -128,7 +135,9 @@ is classified by its occupancy pattern across horizons: \textbf{STATIC} --- occu
 \emph{all} horizons (persistent hidden structure; $\approx$7\% of shadow), where recall measures
 \textbf{amodal completion}; \textbf{DYNAMIC} --- occupied at \emph{some but not all} horizons
 ($\le$1.5\%), where IoU measures genuine \textbf{forecasting} beyond persistence; \textbf{NEVER}
---- occupied at \emph{no} horizon ($\approx$92\%), the false-positive test. This separates
+--- occupied at \emph{no} horizon ($\approx$92\%), the false-positive test. (Dynamics faster than
+the 1\,s grid --- e.g.\ debris settling within a second --- fall into STATIC, biasing the split
+toward completion; the continuously-moving tier is the cleaner forecasting test.) This separates
 completion from clairvoyance --- a distinction pooled shadow-IoU hides.
 
 \textbf{Per-episode bootstrap CIs.} Frames within an episode share geometry and pose, so we
@@ -187,7 +196,7 @@ inflated and reported only for reference; the micro-gain is the defended number.
 \textbf{Observation-blind prior.} Persistence could be a weak baseline for \emph{completion}, so
 we also evaluate a pose-marginal dataset prior (mean training-set occupancy in the egocentric
 frame, no observation at all), swept over thresholds and scored at its most favorable one. It reaches only 0.08--0.10 micro shadow IoU across tiers (0.09 on the
-randomized-geometry set): to recall hidden structure (0.87--0.92) it must blanket 72--79\% of
+randomized-geometry set): to recall hidden structure (0.86--0.92) it must blanket 72--79\% of
 genuinely empty hidden space with false positives, whereas the model achieves 0.61--0.72 IoU at
 a 1.4--3.4\% false-positive rate. An observation-\emph{conditioned} heuristic (dilating observed
 obstacles into shadow, scored at its best radius) peaks at 0.31--0.35 --- at or below
@@ -197,7 +206,7 @@ alike.
 
 \textbf{Completion, not clairvoyance.} Decomposing the shadow mask attributes the gain almost
 entirely to amodal completion (Table~\ref{tab:decomp}). Excluding all persistent structure, the
-residual ``nostatic'' gain sits at the noise floor: fixed static +0.000, moving +0.007 (CI
+residual ``nostatic'' gain is at or near zero: fixed static +0.000, moving +0.007 (CI
 [+0.002, +0.012]), randomized-geometry static +0.002 ([+0.001, +0.004]) at 5\,s. The honest
 claim is \textbf{amodal completion of hidden structure}, plus a small but statistically
 significant moving-tier forecasting signal that decays with horizon as genuine forecasting
@@ -240,15 +249,15 @@ held-out randomized rooms (Table~\ref{tab:decomp}, bottom): the gain does not dr
 entirely) and completion recall is if anything higher on never-seen rooms: completion is
 per-scene inference, not a memorized shell.
 
-\textbf{Calibration in shadow.}
-At 5\,s, in-shadow ECE is 0.043--0.047 across tiers --- \emph{better} than in observed space
-(0.058--0.086) --- with Brier 0.022--0.036; excluding persistent structure entirely, in-shadow
-ECE remains 0.055--0.056 on the tiers with dynamic content (the static tier's
-structure-excluded region has no positive labels, hence no curve), so the calibration is not
-carried by the easy always-occupied cells. The model is underconfident in the mid-range but
-places little mass there; calibration is no fixed-room artifact: on randomized geometry,
-in-shadow ECE is 0.050--0.067 vs observed 0.056--0.077, with shadow the better-calibrated
-region at 5--10\,s.
+\textbf{Calibration in shadow.} Shadow is ${\sim}$92\% empty, so a raw in-shadow ECE is easy to
+make small; we therefore lead with the harder number --- excluding persistent structure entirely,
+in-shadow ECE at 5\,s remains a low 0.055--0.056 on the tiers with dynamic content (the static
+tier's structure-excluded region has no positive labels, hence no curve), so calibration is
+carried by the genuinely uncertain cells, not the easy always-occupied ones. On the full shadow
+mask at 5\,s, in-shadow ECE is 0.043--0.047 --- lower than observed space (0.058--0.086), Brier
+0.022--0.036 --- though this edge is aided by shadow's emptiness. Calibration is no fixed-room
+artifact: on randomized geometry, in-shadow ECE is 0.050--0.067 vs observed 0.056--0.077, shadow
+better-calibrated at 5--10\,s (comparable at 1\,s).
 
 \textbf{Ablations.} Retraining without either auxiliary channel leaves the gain intact:
 no-visibility per-tier gains at 5\,s (+0.309/+0.360/+0.313 vs full +0.306/+0.363/+0.315) are
@@ -256,12 +265,12 @@ within CI and the no-flow rollout gain (+0.381 vs +0.320) is if anything higher;
 redundant (no optical flow on the critical path); as independent retrainings that all land
 within the full model's CIs, they also bound training-seed variance.
 
-\textbf{System.} The perception-to-planning path runs at 5.97\,ms p50 / 7.00\,ms p95 (batch 1,
+\textbf{System.} The perception-to-planning path runs at 6.47\,ms p50 / 6.99\,ms p95 (batch 1,
 deterministic U-Net), inside a 50\,ms (20\,Hz) budget; the excluded monocular-depth stage is
 not free (Depth-Anything-V2-Small: 49.9\,ms p50 / 50.7\,ms p95 in isolation, 54.4\,ms measured
 end-to-end sequential, evaluation-era GTX~1080~Ti, $480{\times}640$), so deployment runs depth
 asynchronously while the 7\,ms completion path consumes the latest depth frame at 20\,Hz
-(audio synthesis excluded). A falling-object \emph{proxy} (cell-level detection 0.787 at 2.62\,s mean lead;
+(audio synthesis excluded). An occupancy-arrival \emph{diagnostic} (not falling-object anticipation; cell-level detection 0.787 at 2.62\,s mean lead;
 component-level 0.752, precision only 0.714) counts events per due prediction, not per object,
 keys on cells revealed rather than newly occupied (occluded static geometry revealed by agent
 motion also counts), and its lead is bounded by the \{1,3,5,10\}\,s horizon grid, missing the
