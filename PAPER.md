@@ -8,8 +8,9 @@ to the CFP page limit once available.*
 
 ## Abstract
 
-A mobile agent must reason about space it cannot currently see — the region occluded by the
-walls and obstacles it is navigating around ("shadow"). We study how well a model can
+An embodied agent must model the physical scene it cannot directly see — the occupancy occluded
+by the walls and obstacles it moves among ("shadow"). A world model that represents only the
+visible surface is blind to half its workspace. We study how well a model can
 **complete** occupancy in that occluded region from a **single monocular-depth frame**, and,
 crucially, whether it knows *when it is guessing*. ShadowWeave projects one depth frame into an
 egocentric bird's-eye-view (BEV) occupancy grid, marks the unobserved cells with an explicit
@@ -19,9 +20,10 @@ gain of **+0.31 to +0.36 at a 5 s horizon** (95% per-episode bootstrap CIs clear
 every horizon), far exceeds an observation-blind dataset prior even at the prior's best
 threshold (0.61–0.72 IoU vs 0.08–0.10), and its uncertainty is **better calibrated inside
 shadow (ECE 0.043–0.047, at 5 s) than in directly observed space (0.058–0.086)**. We frame
-prediction into occluded space as **world modeling of the unobserved** — inferring environment
-state where the sensor has no view — and introduce a decomposition that separates *amodal
-completion* of persistent hidden structure from *temporal forecasting* of dynamics. It yields an
+prediction into occluded space as **world modeling of the unobserved physical scene** — inferring
+the occupancy state a downstream controller needs where the sensor has no view — and introduce a
+decomposition that separates *amodal completion* of persistent hidden structure from *temporal
+forecasting* of dynamics. It yields an
 honest characterization of this single-frame world model: its predictive power is almost entirely
 spatial completion — the pure-forecasting residual is small (≤+0.007 at 5 s) and decays with
 horizon. Randomizing room geometry per episode leaves the gain statistically unchanged
@@ -36,12 +38,15 @@ intervals — as a reusable protocol for honest occupancy-completion claims.
 
 ## 1. Introduction
 
-Agents act in space they cannot see. A person stepping into a corridor, a robot rounding a
-shelf, a blind traveler crossing an unfamiliar room — each must anticipate structure that is
-occluded by the very obstacles they are navigating around. Sensing provides a partial view; the
-rest must be inferred. For safety-critical, eyes-free use, that inference is only useful if it is
-accompanied by an honest estimate of its own reliability: a confident hallucination of clear
-space behind a wall is worse than a calibrated "I don't know."
+Any embodied agent acting in the physical world must reason about the parts of a scene it cannot
+directly observe — the occupancy occluded by the very walls and obstacles it moves among. A
+world model that represents only what the sensor sees is blind to half of the workspace: a robot
+rounding a shelf, an agent entering a room, a planner routing around a blind corner all depend on
+the *unobserved* physical state as much as the visible one, and completing that hidden state is a
+prerequisite for reasoning about what happens next. Sensing provides a partial view; the rest
+must be inferred, and for any downstream use — planning, control, or a human-facing interface —
+that inference is only trustworthy if it carries an honest estimate of its own reliability: a
+confident hallucination of clear space behind a wall is worse than a calibrated "I don't know."
 
 Prior work addresses parts of this problem but not their conjunction. Semantic scene completion,
 from MonoScene through VoxFormer and VisHall3D, hallucinates dense geometry beyond the visible
