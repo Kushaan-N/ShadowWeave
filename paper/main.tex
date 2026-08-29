@@ -120,13 +120,12 @@ Our contributions are:
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=\linewidth]{architecture.png}
-  \caption{ShadowWeave pipeline. A single monocular-depth frame is lifted by a differentiable
-  projector into an egocentric $96\times96$ BEV occupancy grid together with a visibility grid;
-  thresholding visibility yields the explicit shadow mask marking cells the sensor cannot see. A
-  31M-parameter U-Net predicts per-cell occupancy probabilities at 1/3/5/10\,s horizons inside
-  that mask; the completed grid and its uncertainty feed an A* planner and a nine-zone HRTF
-  spatial-audio interface for eyes-free navigation.}
+  \includegraphics[width=0.92\linewidth]{architecture.png}
+  \caption{ShadowWeave pipeline. A single monocular-depth frame is lifted into an egocentric
+  $96\times96$ BEV occupancy grid plus a visibility grid; thresholding visibility yields the shadow
+  mask. A 31M-parameter U-Net completes per-cell occupancy at 1/3/5/10\,s inside the mask; the
+  completed grid and its uncertainty feed an A* planner and a nine-zone HRTF audio interface
+  (system context).}
   \label{fig:architecture}
 \end{figure}
 
@@ -283,7 +282,7 @@ Table~\ref{tab:gain}.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.85\linewidth]{shadow_gain_ci.png}
+  \includegraphics[width=0.72\linewidth]{shadow_gain_ci.png}
   \caption{Micro-averaged shadow-IoU gain over persistence per tier and horizon, with 95\%
   per-episode bootstrap confidence intervals. Every interval is clear of zero at every horizon,
   so the gain is statistically significant rather than sampling noise.}
@@ -297,22 +296,16 @@ shadow gain is +0.325\slash+0.322\slash+0.320\slash+0.178 at 1/3/5/10\,s. (Raw m
 persistence 0.424 at 5\,s --- are empty-credit inflated and are reported only for reference; the
 micro-gain is the defended number.)
 
-\paragraph{Observation-blind prior.} Persistence could be a weak baseline for \emph{completion},
-so we also evaluate a pose-marginal dataset prior --- the mean training-set occupancy in the
-egocentric frame, using no observation at all --- swept over thresholds and reported at its most
-favorable one. It reaches only 0.08--0.10 micro shadow IoU across tiers, and 0.09 on the
-randomized-geometry set: to recall hidden structure (0.86--0.92) it must blanket 72--79\% of
-genuinely empty hidden space with false positives, whereas the model achieves 0.61--0.72 IoU
-at a 1.4--3.4\% false-positive rate.
-A complementary observation-conditioned heuristic --- dilating every observed obstacle into the
-shadow, swept over radii and scored at its best --- peaks at its smallest radius with micro
-shadow IoU 0.31--0.35, at or marginally below persistence itself; growing the radius only
-trades false positives for recall, monotonically lowering IoU. Hidden structure is non-local:
-neither copying the observation, extrapolating it locally, nor an observation-blind prior
-recovers it. Completion is therefore learned observation-conditional inference; together with
-the geometry-randomization result (\S\ref{sec:robustness}) this rules out memorized layouts,
-memorized marginals, and trivial extrapolation alike (full tables in
-Appendix~\ref{app:prior}).
+\paragraph{Beyond persistence.} Persistence could be a weak baseline for \emph{completion}, so we
+test two stronger ones (full tables in Appendix~\ref{app:prior}). An observation-blind
+pose-marginal prior (mean training occupancy, swept to its best threshold) reaches only
+0.08--0.10 micro shadow IoU: it recalls hidden structure (0.86--0.92) only by blanketing 72--79\%
+of empty hidden space with false positives, whereas the model achieves 0.61--0.72 IoU at a
+1.4--3.4\% false-positive rate. An observation-conditioned dilation heuristic peaks at micro
+shadow IoU 0.31--0.35, at or below persistence itself. Hidden structure is thus non-local:
+copying the observation, extrapolating it locally, and an observation-blind prior all fail.
+Together with the geometry-randomization result (\S\ref{sec:robustness}), this rules out
+memorized layouts, memorized marginals, and trivial extrapolation alike.
 
 \subsection{What the gain is: completion, not clairvoyance}
 \label{sec:completion}
@@ -340,7 +333,7 @@ persistent hidden structure (Table~\ref{tab:decomp}, Fig.~\ref{fig:decomp}).
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.9\linewidth]{decomp_curves.png}
+  \includegraphics[width=0.78\linewidth]{decomp_curves.png}
   \caption{Decomposition of the shadow gain across horizons: persistent-structure recall (amodal
   completion) versus dynamic IoU (forecasting) for model and persistence. The gain is spatial
   completion of persistent hidden structure; the small dynamic-forecasting signal on the moving
@@ -399,17 +392,8 @@ note this shadow-vs-observed edge is aided by shadow's emptiness and is a second
 not the primary claim. The model is underconfident in the mid-range but places little mass there.
 Calibration is not an artifact of the fixed room: on randomized geometry, in-shadow ECE is
 0.050--0.067 vs observed 0.056--0.077, with shadow the better-calibrated region only at the longer
-5--10\,s horizons (at 1\,s the two are comparable).
-
-\begin{figure}[t]
-  \centering
-  \includegraphics[width=0.55\linewidth]{reliability.png}
-  \caption{Reliability diagrams restricted to shadow cells (equal-mass binning: a fine 1000-bin
-  histogram merged into 15 equal-count macro-bins). At 5\,s, in-shadow ECE is 0.043--0.047 across
-  tiers --- better than in directly observed space (0.058--0.086) --- with Brier 0.022--0.036;
-  the model is underconfident in the mid-range but places little mass there.}
-  \label{fig:reliability}
-\end{figure}
+5--10\,s horizons (at 1\,s the two are comparable). The reliability diagram is in
+Appendix~\ref{app:reliability} (Fig.~\ref{fig:reliability}).
 
 \subsection{Ablations: occupancy alone carries the signal}
 \label{sec:ablations}
@@ -445,15 +429,12 @@ confidence intervals, so the headline gain is not an artifact of a lucky trainin
 \subsection{System: latency and navigation}
 \label{sec:system}
 
-\paragraph{Latency.} The perception-to-planning forward path (BEV projection, raycaster, world-model
+\paragraph{Latency.} The perception-to-planning path (BEV projection, raycaster, world-model
 forward, orchestrator; batch 1, deterministic U-Net) runs at 6.47\,ms p50 / 6.99\,ms p95 --- well
-inside a 50\,ms (20\,Hz) budget. The monocular-depth stage is excluded and is not free: measured
-in isolation, Depth-Anything-V2-Small takes 49.9\,ms p50 / 50.7\,ms p95 on the evaluation-era GPU
-(GTX~1080~Ti, $480{\times}640$ input) --- comparable to the entire budget on that hardware. Run
-sequentially, the measured end-to-end latency including depth is 54.4\,ms (18\,Hz) on the same
-GPU; a deployed system therefore runs depth asynchronously at its own ${\sim}20$\,Hz rate while
-the 7\,ms completion path consumes the most recent depth frame, at the cost of one frame of
-depth staleness. Audio synthesis remains excluded.
+inside a 50\,ms (20\,Hz) budget. Depth is the bottleneck: Depth-Anything-V2-Small alone takes
+49.9\,ms p50 on the evaluation-era GPU (GTX~1080~Ti, $480{\times}640$), so the sequential
+end-to-end pipeline is 54.4\,ms (18\,Hz). A deployed system runs depth asynchronously at its own
+rate while the 7\,ms completion path consumes the latest depth frame; audio synthesis is excluded.
 
 We also probed whether the model flags occupancy that materializes in shadow before it is
 revealed. Because that metric conflates falling objects with static geometry revealed by agent
@@ -489,20 +470,16 @@ dynamics.
 \section{Limitations}
 \label{sec:limitations}
 
-Our evaluation is in simulation; ground-truth occluded occupancy is unavailable on real footage
-without instrumentation, so no quantitative real-world claim is made. The perception front-end
-nonetheless accepts real monocular depth (Depth-Anything-V2), so sim-to-real transfer of the
-completion model is the natural next step --- noting that evaluation currently consumes the
-simulator's clean depth, so robustness of the completion to estimated-depth noise is untested.
-We compare against strong self-constructed baselines rather than prior methods, which target
-different input regimes (e.g., ProxMaP's top-down RGB-D view); a head-to-head on a shared
-benchmark is future work. Our results characterize a single 31M single-frame CNN: the
-evaluation protocol is architecture-agnostic, and the negative result on forecasting applies to
-this model class, not necessarily to larger or recurrent models. The model performs
-amodal \emph{completion}, not multi-step \emph{forecasting}: the pure-dynamics residual is small (a
-statistically significant but $\le$+0.007 gain at 5\,s), and we frame the contribution accordingly.
-Navigation does not meet its collision target and the audio interface is not user-evaluated; both
-are presented as system context.
+Our evaluation is in simulation on the simulator's clean depth: ground-truth occluded occupancy is
+unavailable on real footage without instrumentation, so no quantitative real-world claim is made
+and robustness of the completion to estimated-depth noise is untested, though the front-end accepts
+real monocular depth (Depth-Anything-V2). We compare against strong self-constructed baselines
+rather than prior methods, which target different input regimes (e.g., ProxMaP's top-down RGB-D
+view); a head-to-head on a shared benchmark is future work. Our results characterize a single 31M
+single-frame CNN, so the forecasting-negative applies to this model class, not necessarily to
+larger or recurrent ones (the evaluation protocol itself is architecture-agnostic). Navigation
+does not meet its collision target and the audio interface is not user-evaluated; both are system
+context.
 
 \section{Conclusion}
 \label{sec:conclusion}
@@ -662,5 +639,18 @@ checkpoint selected on validation IoU; train, validation, and evaluation episode
 seed ranges. Code, configuration, seeds, the evaluation summaries behind every table, and a
 frozen dependency lock accompany the paper; datasets are regenerable from seeds with a single
 pipeline script.
+
+\section{Reliability diagram}
+\label{app:reliability}
+
+\begin{figure}[ht]
+  \centering
+  \includegraphics[width=0.55\linewidth]{reliability.png}
+  \caption{Reliability diagram restricted to shadow cells (equal-mass binning: a fine 1000-bin
+  histogram merged into 15 equal-count macro-bins), debris tier. At 5\,s, in-shadow ECE is
+  0.043--0.047 across tiers --- lower than in directly observed space (0.058--0.086) --- with
+  Brier 0.022--0.036; the model is underconfident in the mid-range but places little mass there.}
+  \label{fig:reliability}
+\end{figure}
 
 \end{document}
