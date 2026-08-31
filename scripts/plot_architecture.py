@@ -65,7 +65,7 @@ def plot_architecture(out_dir: pathlib.Path) -> None:
     ax.set_xlim(0, 1); ax.set_ylim(0, 1); ax.axis("off")
 
     ym = 0.68             # main perception row
-    w, h = 0.215, 0.26    # default box size
+    w, h = 0.20, 0.26     # default box size (gaps between boxes must fit a real arrow)
     xs = [0.12, 0.365, 0.61, 0.865]
 
     _box(ax, xs[0], ym, w, h, "Monocular depth", "single frame\n(Depth-Anything-V2)",
@@ -74,12 +74,15 @@ def plot_architecture(out_dir: pathlib.Path) -> None:
          BLUE, _tint(BLUE, 0.12))
     _box(ax, xs[2], ym, w, h, "World model", "U-Net, single frame\n(BCE, EMA)",
          BLUE, _tint(BLUE, 0.12))
-    _box(ax, xs[3], ym, 0.245, 0.30,
+    _box(ax, xs[3], ym, 0.22, 0.30,
          "Completed\noccupancy", "+ calibrated uncertainty\nINTO shadow",
          ORANGE, _tint(ORANGE, 0.16), lw=2.2)
 
-    for a, b in zip(xs[:-1], xs[1:]):
-        _arrow(ax, a + w / 2, ym, b - w / 2, ym)
+    # Arrow endpoints must use each box's OWN width — the last box is wider (0.245),
+    # and using the default width put the arrowhead underneath its fill.
+    widths = [w, w, w, 0.22]
+    for i in range(len(xs) - 1):
+        _arrow(ax, xs[i] + widths[i] / 2, ym, xs[i + 1] - widths[i + 1] / 2, ym)
 
     # Downstream interface row.
     yd = 0.175
