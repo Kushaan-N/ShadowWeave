@@ -432,8 +432,10 @@ confidence intervals, so the headline gain is not an artifact of a lucky trainin
 \paragraph{Latency.} The perception-to-planning path (BEV projection, raycaster, world-model
 forward, orchestrator; batch 1, deterministic U-Net) runs at 6.47\,ms p50 / 6.99\,ms p95 --- well
 inside a 50\,ms (20\,Hz) budget. Depth is the bottleneck: Depth-Anything-V2-Small alone takes
-49.9\,ms p50 on the evaluation-era GPU (GTX~1080~Ti, $480{\times}640$), so the sequential
-end-to-end pipeline is 54.4\,ms (18\,Hz). A deployed system runs depth asynchronously at its own
+49.9\,ms p50 on the evaluation-era GPU (GTX~1080~Ti, $480{\times}640$); a separate
+single-process benchmark of the sequential depth$\to$completion pipeline (whose in-process
+completion subtotal, without the orchestrator, is 4.4\,ms) measures 54.4\,ms end-to-end
+(18\,Hz). A deployed system runs depth asynchronously at its own
 rate while the 7\,ms completion path consumes the latest depth frame; audio synthesis is excluded.
 
 We also probed whether the model flags occupancy that materializes in shadow before it is
