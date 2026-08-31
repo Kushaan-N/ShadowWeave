@@ -55,7 +55,7 @@ def plot_curves(data, out_path):
     # (model_key, persistence_key, title). Persistence is drawn dashed so the reader
     # can see where the model beats the baseline and where it does not (debris
     # dynamic IOU at 3-10s) — hiding that would be indefensible in review.
-    panels = [("dynamic_iou_model", "dynamic_iou_persist", "dynamic IOU in shadow\n(forecasting)"),
+    panels = [("dynamic_iou_model", "dynamic_iou_persist", "dynamic IoU in shadow\n(forecasting)"),
               ("dynamic_recall_model", None, "dynamic recall in shadow"),
               ("static_coverage_model", "static_coverage_persist",
                "persistent-structure recall\n(amodal completion)")]
@@ -127,7 +127,7 @@ def plot_gain_ci(data, randgeom, out_path):
         ax.set_title(title, fontsize=11)
         ax.set_xlabel("horizon (s)")
         ax.grid(alpha=0.25)
-    axL.set_ylabel("shadow IOU gain over persistence")
+    axL.set_ylabel("shadow IoU gain over persistence")
     axL.legend(fontsize=9)
     plt.tight_layout()
     fig.savefig(out_path, dpi=200)
