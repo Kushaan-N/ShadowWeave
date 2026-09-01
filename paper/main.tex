@@ -1,7 +1,8 @@
 % ShadowWeave workshop paper -- full version, NeurIPS 2026 style.
-% Default (no option) = SUBMISSION mode: anonymized automatically + line numbers,
-% which is what RoboWM's double-blind OpenReview review wants. For the de-anonymized
-% camera-ready, switch to \usepackage[final]{neurips_2026}.
+% Default (no option) = SUBMISSION mode: anonymized automatically + line numbers.
+% Target: World Models in Physical AI @ NeurIPS 2026 (OpenReview, deadline Sep 5 AoE,
+% <=8 pages excl. references, NeurIPS 2026 template, non-archival). For the
+% de-anonymized camera-ready, switch to \usepackage[final]{neurips_2026}.
 \documentclass{article}
 \usepackage{neurips_2026}
 % \usepackage[final]{neurips_2026}   % camera-ready
@@ -123,7 +124,7 @@ Our contributions are:
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.86\linewidth]{architecture.png}
+  \includegraphics[width=0.8\linewidth]{architecture.png}
   \caption{ShadowWeave pipeline. A single monocular-depth frame is lifted into an egocentric
   $96\times96$ BEV occupancy grid plus a visibility grid; thresholding visibility yields the shadow
   mask. A 31M-parameter U-Net completes per-cell occupancy at 1/3/5/10\,s inside the mask; the
@@ -286,7 +287,7 @@ Table~\ref{tab:gain}.
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.87\linewidth]{shadow_gain_ci.png}
+  \includegraphics[width=0.8\linewidth]{shadow_gain_ci.png}
   \caption{Micro-averaged shadow-IoU gain over persistence per tier and horizon, with 95\%
   per-episode bootstrap confidence intervals. Every interval is clear of zero at every horizon,
   so the gain is statistically significant rather than sampling noise.}
@@ -337,7 +338,7 @@ persistent hidden structure (Table~\ref{tab:decomp}, Fig.~\ref{fig:decomp}).
 
 \begin{figure}[t]
   \centering
-  \includegraphics[width=0.94\linewidth]{decomp_curves.png}
+  \includegraphics[width=0.86\linewidth]{decomp_curves.png}
   \caption{Decomposition of the shadow gain across horizons: persistent-structure recall (amodal
   completion) versus dynamic IoU (forecasting) for model and persistence. The gain is spatial
   completion of persistent hidden structure; the small dynamic-forecasting signal on the moving
@@ -442,17 +443,14 @@ completion subtotal, without the orchestrator, is 4.4\,ms) measures 54.4\,ms end
 (18\,Hz). A deployed system runs depth asynchronously at its own
 rate while the 7\,ms completion path consumes the latest depth frame; audio synthesis is excluded.
 
-We also probed whether the model flags occupancy that materializes in shadow before it is
-revealed. Because that metric conflates falling objects with static geometry revealed by agent
-motion and does not meet its lead-time target, we report it only as a diagnostic in
-Appendix~\ref{app:falling}, not as a result or a contribution.
+A probe of whether the model flags occupancy materializing in shadow before it is revealed
+conflates falling objects with static geometry revealed by agent motion and misses its lead-time
+target; we report it only as a diagnostic in Appendix~ef{app:falling}, not as a contribution.
 
 \paragraph{Navigation.} With the completed grid feeding the planner, the trained reactive policy achieves a
 per-episode collision rate of 0.367 (vs 0.60 untrained) and path straightness 0.773, but does not
 meet the $\le$0.10 collision target. We present navigation as an honest system demonstration.
-
-A generative (conditional-diffusion) variant of the world model is deferred to
-Appendix~\ref{app:generative}.
+(A generative variant of the world model is deferred to Appendix~\ref{app:generative}.)
 
 \section{Related work}
 \label{sec:related}
@@ -460,7 +458,7 @@ Appendix~\ref{app:generative}.
 Predicting the structure of unobserved space has been approached from three angles. Semantic scene
 completion, from SSCNet \citep{song2017sscnet} through MonoScene \citep{cao2022monoscene} and its
 monocular successors VoxFormer \citep{li2023voxformer} and VisHall3D \citep{lu2025vishall3d},
-infers dense voxel geometry, and even hallucinates geometry beyond the visible frontier, from a
+infers dense voxel geometry from a
 single image, but it targets outdoor driving voxels evaluated purely by mIoU/IoU, without
 calibrated uncertainty in the occluded region. Occupancy world models such as
 OccWorld \citep{zheng2024occworld}, together with occupancy-forecasting
@@ -490,13 +488,12 @@ context.
 \section{Conclusion}
 \label{sec:conclusion}
 
-Calibrated amodal completion of occluded occupancy is achievable from a single monocular-depth
-frame, transfers to room geometries the model never saw, and can be delivered within a real-time
-perception-to-planning budget for an eyes-free interface. Equally important is \emph{how} we measure it:
+Calibrated amodal completion of occluded occupancy works from one monocular-depth frame,
+transfers to never-seen room geometries, and fits a real-time perception-to-planning budget.
+Equally important is \emph{how} we measure it:
 an empty-credit-immune micro-gain, per-episode confidence intervals, and a decomposition that
-separates completion from forecasting keep the claim honest and expose exactly where the predictive
-power lies. We hope the protocol is reused, since many occupancy-completion results would read
-differently under it.
+separates completion from forecasting keep the claim honest. We hope the protocol is reused,
+since many occupancy-completion results would read differently under it.
 
 \bibliographystyle{plainnat}
 \bibliography{references}
