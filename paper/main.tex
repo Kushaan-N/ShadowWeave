@@ -4,6 +4,9 @@
 % <=8 pages excl. references, NeurIPS 2026 template, non-archival). For the
 % de-anonymized camera-ready, switch to \usepackage[final]{neurips_2026}.
 \documentclass{article}
+% Numeric citations in order of appearance + 9pt references — the standard look
+% of current NeurIPS papers.
+\PassOptionsToPackage{numbers,square,comma,sort&compress}{natbib}
 \usepackage{neurips_2026}
 % \usepackage[final]{neurips_2026}   % camera-ready
 
@@ -445,7 +448,8 @@ rate while the 7\,ms completion path consumes the latest depth frame; audio synt
 
 A probe of whether the model flags occupancy materializing in shadow before it is revealed
 conflates falling objects with static geometry revealed by agent motion and misses its lead-time
-target; we report it only as a diagnostic in Appendix~ef{app:falling}, not as a contribution.
+target; we report it only as a diagnostic in Appendix~
+ef{app:falling}, not as a contribution.
 
 \paragraph{Navigation.} With the completed grid feeding the planner, the trained reactive policy achieves a
 per-episode collision rate of 0.367 (vs 0.60 untrained) and path straightness 0.773, but does not
@@ -462,7 +466,7 @@ infers dense voxel geometry from a
 single image, but it targets outdoor driving voxels evaluated purely by mIoU/IoU, without
 calibrated uncertainty in the occluded region. Occupancy world models such as
 OccWorld \citep{zheng2024occworld}, together with occupancy-forecasting
-benchmarks (Occ3D; \citealp{tian2023occ3d}) and self-supervised raycasting forecasters
+benchmarks (Occ3D \citep{tian2023occ3d}) and self-supervised raycasting forecasters
 \citep{khurana2023pointcloud}, instead predict the \emph{temporal} evolution of multi-frame occupancy for autonomous vehicles.
 Closest in spirit, ProxMaP \citep{sharma2023proxmap} completes indoor proximal occupancy from a single
 view for navigation, yet emits only point estimates. ShadowWeave is distinct in delivering
@@ -495,7 +499,8 @@ an empty-credit-immune micro-gain, per-episode confidence intervals, and a decom
 separates completion from forecasting keep the claim honest. We hope the protocol is reused,
 since many occupancy-completion results would read differently under it.
 
-\bibliographystyle{plainnat}
+\renewcommand{\bibfont}{\small}
+\bibliographystyle{unsrtnat}
 \bibliography{references}
 
 \appendix
