@@ -28,7 +28,7 @@ GREEN = "#009E73"   # downstream interface
 GREY = "#555555"
 
 
-def _box(ax, x, y, w, h, title, sub, edge, fill, title_size=10, sub_size=8, lw=1.6):
+def _box(ax, x, y, w, h, title, sub, edge, fill, title_size=9.5, sub_size=8, lw=1.6):
     ax.add_patch(FancyBboxPatch(
         (x - w / 2, y - h / 2), w, h,
         boxstyle="round,pad=0.006,rounding_size=0.018",
