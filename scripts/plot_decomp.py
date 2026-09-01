@@ -74,18 +74,14 @@ def plot_curves(data, out_path):
         ax.set_xlabel("horizon (s)")
         ax.grid(alpha=0.25)
     axes[0].set_ylabel("score")
-    # Build the legend from every tier present in the data, not just those drawn in
-    # panel 0 — static appears only in the completion panel (it has no dynamic cells),
-    # so reading handles off panel 0 would leave its line unlabeled.
+    # One legend, in the completion panel — the only panel where every tier is drawn
+    # (static has no dynamic cells, so panels 0-1 have no blue line to label).
     handles = [plt.Line2D([], [], color=COLORS.get(t, "#333"), marker="o")
                for t in TIERS if t in data]
     labels = [t for t in TIERS if t in data]
     handles.append(plt.Line2D([], [], color="#555", linestyle="--", marker="."))
     labels.append("persistence (dashed)")
-    axes[0].legend(handles, labels, fontsize=8)
-    axes[0].text(0.5, 0.02, "static: no dynamic cells (completion panel only)",
-                 transform=axes[0].transAxes, ha="center", va="bottom",
-                 fontsize=7, color="#777")
+    axes[2].legend(handles, labels, fontsize=8, loc="center left")
     plt.tight_layout()
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
@@ -128,7 +124,7 @@ def plot_gain_ci(data, randgeom, out_path):
         ax.set_xlabel("horizon (s)")
         ax.grid(alpha=0.25)
     axL.set_ylabel("shadow IoU gain over persistence")
-    axL.legend(fontsize=9)
+    axL.legend(fontsize=9, loc="lower right")
     plt.tight_layout()
     fig.savefig(out_path, dpi=200)
     plt.close(fig)
