@@ -1,16 +1,22 @@
 # ShadowWeave
 
-Multi-agent navigation that conveys spatial awareness through 3D spatial audio, for
-blind users and disaster-response scenarios. No haptics, no screens required.
+A calibrated world model of occluded space. From a **single monocular-depth frame**,
+ShadowWeave completes occupancy in the region the sensor cannot see (the "shadow") and
+attaches a **calibrated per-cell uncertainty** to that prediction.
 
-**Core mechanism.** Differentiable rays are cast through a learned occupancy field.
-Rays that terminate early define *shadow zones* — regions the sensor cannot see into.
-Those shadow zones are propagated forward by a physics-informed world model and turned
-into directional HRTF audio, so the user hears not just what is there but what *might
-be* in the space they cannot observe.
+**Core idea.** One depth frame is projected into an egocentric bird's-eye-view (BEV)
+occupancy grid with an explicit shadow mask over the unobserved cells. A U-Net completes
+occupancy inside that mask, and its per-cell probability is a calibrated estimate of how
+sure it is. An evaluation protocol (empty-credit-immune micro-averaging, a
+completion-vs-forecasting decomposition, and per-episode bootstrap confidence intervals)
+shows the gain is **amodal completion of hidden structure**, not temporal forecasting,
+and that it survives randomized room geometry. The completed grid and its uncertainty
+feed an A* planner and a nine-zone HRTF spatial-audio interface for eyes-free navigation
+(a systems demonstration).
 
-This is deliberately **not** SLAM and not object detection + avoidance. The novel claim
-is uncertainty propagation through unobserved space.
+This is deliberately **not** SLAM and not object detection plus avoidance. The claim is
+calibrated completion of unobserved occupancy, measured honestly. A NeurIPS 2026 workshop
+paper; see [`PAPER.md`](PAPER.md) and [`paper/main.pdf`](paper/main.pdf).
 
 > **Running this on a GPU cluster?** Read [`HANDOFF.md`](HANDOFF.md) first —
 > setup, the exact job order, storage requirements, and the traps that cost hours.
