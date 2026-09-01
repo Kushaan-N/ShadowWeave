@@ -15,8 +15,8 @@ feed an A* planner and a nine-zone HRTF spatial-audio interface for eyes-free na
 (a systems demonstration).
 
 This is deliberately **not** SLAM and not object detection plus avoidance. The claim is
-calibrated completion of unobserved occupancy, measured honestly. A NeurIPS 2026 workshop
-paper; see [`PAPER.md`](PAPER.md) and [`paper/main.pdf`](paper/main.pdf).
+calibrated completion of unobserved occupancy, measured honestly. See
+[`PAPER.md`](PAPER.md) and [`paper/main.pdf`](paper/main.pdf) for the full write-up.
 
 > **Running this on a GPU cluster?** Read [`HANDOFF.md`](HANDOFF.md) first —
 > setup, the exact job order, storage requirements, and the traps that cost hours.
